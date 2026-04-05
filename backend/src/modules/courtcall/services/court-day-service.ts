@@ -13,21 +13,13 @@ import type {
   CloseCourtDayInput,
 } from '../dto/requests.js';
 
+import { recomputePredictionsForCourtDay } from './recalculation-engine.js';
+
 /**
- * Placeholder hook for the recalculation engine (next phase).
- *
- * After events that change the live queue shape (start-live, resume, close,
- * and after most list-item transitions), this function should be called to
- * recompute predictedStartTime / predictedEndTime for all WAITING items.
- *
- * For now it is a no-op. Wire the real engine here.
+ * Re-export the recalculation engine for consumers (e.g. list-item-service)
+ * that import it from this module for historical reasons.
  */
-export async function recomputePredictionsForCourtDay(
-  _courtDayId: string,
-): Promise<void> {
-  // Future: load all non-terminal items, run timing model, persist updates,
-  // emit courtday.projections_recomputed event.
-}
+export { recomputePredictionsForCourtDay };
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
@@ -197,6 +189,7 @@ export async function judgeRose(
   });
 
   publish(envelope);
+  await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
 
@@ -304,5 +297,6 @@ export async function closeCourtDay(
   });
 
   publish(envelope);
+  await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
