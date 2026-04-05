@@ -84,6 +84,12 @@ export function isCompletedForToday(item: ListItem): boolean {
   return isTerminalStatus(item.status as ListItemStatus);
 }
 
+// ─── Duration helpers ────────────────────────────────────────────────────────
+
+function durationMs(item: ListItem): number {
+  return (item.estimatedDurationMinutes ?? DEFAULT_ESTIMATE_MINUTES) * 60_000;
+}
+
 // ─── Pause-aware cursor logic ────────────────────────────────────────────────
 
 /**
@@ -102,70 +108,78 @@ function isSessionPaused(courtDay: CourtDay): boolean {
 /**
  * Determine the base cursor time from which predictions start.
  *
- * Priority order:
- * 1. If court is paused and has an expectedResumeAt, use that as the cursor.
- *    All downstream items won't start until the court resumes.
- * 2. If court is paused with no expectedResumeAt, predictions are frozen —
- *    we return null to signal "cannot project".
- * 3. If there is an active HEARING item with actualStartTime, cursor is
- *    actualStartTime + estimatedDuration (i.e. when it's expected to finish).
- * 4. If there is a CALLING item, cursor is now (it's about to start).
- * 5. Otherwise, cursor is now (court is live, nothing active).
- * 6. If court is SCHEDULED or CLOSED, cursor is startedAt or null.
+ * Handles remaining-duration-on-pause:
+ *
+ * When the judge rises mid-hearing, the active item has partially consumed
+ * its estimate. We must project the *remaining* duration from the resume
+ * time, not the full estimate again. Elapsed time is computed as:
+ *   elapsed = roseAt - actualStartTime
+ *   remaining = estimatedDuration - elapsed  (clamped to ≥ 0)
+ *
+ * The cursor for downstream items is then: resumeAnchor + remaining.
  */
 function determineBaseCursor(
   courtDay: CourtDay,
   items: ListItem[],
   now: Date,
-): Date | null {
+): { cursor: Date | null; activeItemRemainingMs: number | null } {
   const status = courtDay.status as CourtDayStatus;
 
   // Court not yet live or already closed — no live predictions
-  if (status === CourtDayStatus.SCHEDULED) return null;
-  if (status === CourtDayStatus.CLOSED) return null;
-
-  // Court is paused
-  if (isSessionPaused(courtDay)) {
-    if (courtDay.expectedResumeAt) {
-      // Use the later of expectedResumeAt and now — if expectedResumeAt is in
-      // the past but court hasn't formally resumed, we still anchor to now.
-      return courtDay.expectedResumeAt > now ? courtDay.expectedResumeAt : now;
-    }
-    // No resume time known — we can still project relative to "now" but
-    // everything is shifted. Use now as a conservative baseline; the
-    // registrar will update expectedResumeAt when they know.
-    return now;
+  if (status === CourtDayStatus.SCHEDULED || status === CourtDayStatus.CLOSED) {
+    return { cursor: null, activeItemRemainingMs: null };
   }
 
-  // Court is LIVE and session is LIVE — check for active items
   const activeHearing = items.find(
     (i) => (i.status as ListItemStatus) === ListItemStatus.HEARING,
   );
+
+  // ── Court is paused ──────────────────────────────────────────────────
+  if (isSessionPaused(courtDay)) {
+    // Anchor: the later of expectedResumeAt and now
+    const resumeAnchor = courtDay.expectedResumeAt && courtDay.expectedResumeAt > now
+      ? courtDay.expectedResumeAt
+      : now;
+
+    if (activeHearing) {
+      // Compute remaining duration for the active hearing across the pause.
+      // elapsed = time between hearing start and when judge rose
+      const start = activeHearing.actualStartTime ?? now;
+      const roseAt = courtDay.roseAt ?? now;
+      const elapsedMs = Math.max(0, roseAt.getTime() - start.getTime());
+      const totalMs = durationMs(activeHearing);
+      const remainingMs = Math.max(0, totalMs - elapsedMs);
+
+      return {
+        cursor: new Date(resumeAnchor.getTime() + remainingMs),
+        activeItemRemainingMs: remainingMs,
+      };
+    }
+
+    // No active hearing during pause — cursor is the resume anchor
+    return { cursor: resumeAnchor, activeItemRemainingMs: null };
+  }
+
+  // ── Court is LIVE and session is LIVE ────────────────────────────────
   if (activeHearing) {
     const start = activeHearing.actualStartTime ?? now;
-    const durationMs =
-      (activeHearing.estimatedDurationMinutes ?? DEFAULT_ESTIMATE_MINUTES) * 60_000;
-    return new Date(start.getTime() + durationMs);
+    const endTime = new Date(start.getTime() + durationMs(activeHearing));
+    return { cursor: endTime, activeItemRemainingMs: null };
   }
 
   const activeCalling = items.find(
     (i) => (i.status as ListItemStatus) === ListItemStatus.CALLING,
   );
   if (activeCalling) {
-    // Item is being called — its hearing hasn't started yet.
-    // Cursor stays at now; the calling item's own prediction is "now".
-    return now;
+    return { cursor: now, activeItemRemainingMs: null };
   }
 
   // Nothing active, court is live
-  return now;
+  return { cursor: now, activeItemRemainingMs: null };
 }
 
 // ─── Core projection algorithm ───────────────────────────────────────────────
 
-/**
- * Result of a recalculation pass.
- */
 export interface RecalcResult {
   currentItemId: string | null;
   nextCallableItemId: string | null;
@@ -179,26 +193,23 @@ export interface RecalcResult {
 /**
  * Recompute predicted start/end times for all projectable items on a court day.
  *
- * Algorithm:
+ * ALGORITHM — single-pass with time-slot insertion for NOT_BEFORE:
  *
  * 1. Load court day and all items ordered by queuePosition.
- * 2. Determine the base cursor time (see determineBaseCursor).
- * 3. Classify items:
- *    - Active (HEARING/CALLING): anchor predictions to actual times.
- *    - Eligible (WAITING, NOT_BEFORE that's past, PART_HEARD): project.
- *    - Blocked NOT_BEFORE: skip in queue order, defer to later pass.
- *    - Deferred (LET_STAND, STOOD_DOWN): exclude from projection, null out.
- *    - Terminal: null out predictions, skip.
- * 4. First pass: iterate by queuePosition. For each eligible item, set
- *    predictedStartTime = cursor, predictedEndTime = cursor + duration,
- *    then advance cursor. For blocked NOT_BEFORE items, collect them in a
- *    deferred bucket.
- * 5. Second pass: for each deferred NOT_BEFORE item, check if the cursor
- *    has advanced past its notBeforeTime. If so, project it at that point
- *    and advance cursor. If not, project it at notBeforeTime.
- * 6. Persist changes in a single transaction, only updating rows where
- *    predicted times actually changed.
- * 7. Emit courtday.projections_recomputed event.
+ * 2. Determine the base cursor (pause-aware, remaining-duration-aware).
+ * 3. Partition items into buckets:
+ *    - active: HEARING / CALLING — anchor to actual times
+ *    - eligible: WAITING, PART_HEARD, unblocked NOT_BEFORE — project in queue order
+ *    - blocked: NOT_BEFORE with future notBeforeTime — held for time-slot insertion
+ *    - deferred: LET_STAND, STOOD_DOWN — null out predictions
+ *    - terminal: CONCLUDED, SETTLED, ADJOURNED, REMOVED — null out predictions
+ * 4. Build a "projected timeline" by iterating eligible items in queuePosition
+ *    order. After each item is projected, check if any blocked NOT_BEFORE items
+ *    have become eligible (cursor ≥ notBeforeTime). If so, insert them at the
+ *    current cursor position before continuing.
+ * 5. After the main pass, any remaining blocked items are projected at their
+ *    notBeforeTime (they're all in the future — append in time order).
+ * 6. Persist changes (minimal writes), emit projections_recomputed event.
  */
 export async function recomputePredictionsForCourtDay(
   courtDayId: string,
@@ -227,138 +238,203 @@ export async function recomputePredictionsForCourtDay(
   }
 
   // Step 2: Determine base cursor
-  const baseCursor = determineBaseCursor(courtDay, items, now);
+  const { cursor: baseCursor, activeItemRemainingMs } = determineBaseCursor(courtDay, items, now);
 
-  // Step 3 & 4: Classify and project
+  // Step 3: Partition
   const updates: Array<{
     id: string;
     predictedStartTime: Date | null;
     predictedEndTime: Date | null;
   }> = [];
 
-  let cursor = baseCursor; // null means "frozen — cannot project"
+  let cursor = baseCursor;
   let currentItemId: string | null = null;
   let nextCallableItemId: string | null = null;
   let projectedCount = 0;
   let skippedCount = 0;
   let deferredCount = 0;
 
-  // Deferred NOT_BEFORE items that were skipped in the main pass
-  const deferredNotBefore: ListItem[] = [];
-
-  // Handle multi-active anomaly: if multiple items are HEARING, treat only
-  // the first by queuePosition as the "real" active item and log a warning.
+  // Blocked NOT_BEFORE items, sorted by notBeforeTime for time-slot insertion.
+  // We collect them up front so we can drain them during the main pass.
+  const blockedNotBefore: ListItem[] = [];
+  const eligibleQueue: ListItem[] = [];
   let activeHandled = false;
 
   for (const item of items) {
     const s = item.status as ListItemStatus;
 
-    // ── Terminal items: clear predictions ──
+    // Terminal → clear predictions
     if (isCompletedForToday(item)) {
       updates.push({ id: item.id, predictedStartTime: null, predictedEndTime: null });
       skippedCount++;
       continue;
     }
 
-    // ── Deferred items (LET_STAND, STOOD_DOWN): clear predictions ──
+    // Deferred → clear predictions
     if (isDeferred(item)) {
       updates.push({ id: item.id, predictedStartTime: null, predictedEndTime: null });
       deferredCount++;
       continue;
     }
 
-    // ── Active items (HEARING, CALLING) ──
+    // Active → anchor
     if (isActiveItem(item)) {
       if (!activeHandled) {
         currentItemId = item.id;
         activeHandled = true;
       }
-      // Anchor the active item's predictions to its actual times
-      const duration = (item.estimatedDurationMinutes ?? DEFAULT_ESTIMATE_MINUTES) * 60_000;
+
+      const dur = durationMs(item);
+
       if (s === ListItemStatus.HEARING) {
         const start = item.actualStartTime ?? now;
-        const end = new Date(start.getTime() + duration);
-        updates.push({
-          id: item.id,
-          predictedStartTime: start,
-          predictedEndTime: end,
-        });
-        // Multiple HEARING items: only the first advances the cursor
-        if (currentItemId === item.id && cursor !== null) {
-          cursor = end > cursor ? end : cursor;
+
+        if (isSessionPaused(courtDay) && activeItemRemainingMs !== null && currentItemId === item.id) {
+          // Court is paused mid-hearing. Show predictions anchored to resume.
+          // predictedStart stays as actualStartTime (it already started).
+          // predictedEnd = resumeAnchor + remaining (which IS the cursor).
+          updates.push({
+            id: item.id,
+            predictedStartTime: start,
+            predictedEndTime: cursor, // cursor already = resumeAnchor + remaining
+          });
+        } else {
+          const end = new Date(start.getTime() + dur);
+          updates.push({
+            id: item.id,
+            predictedStartTime: start,
+            predictedEndTime: end,
+          });
+          // Advance cursor if this active item's end is later
+          if (cursor !== null && currentItemId === item.id) {
+            cursor = end > cursor ? end : cursor;
+          }
         }
       } else {
-        // CALLING: will start imminently
+        // CALLING: imminent start
         updates.push({
           id: item.id,
           predictedStartTime: cursor,
-          predictedEndTime: cursor ? new Date(cursor.getTime() + duration) : null,
+          predictedEndTime: cursor ? new Date(cursor.getTime() + dur) : null,
         });
         if (cursor) {
-          cursor = new Date(cursor.getTime() + duration);
+          cursor = new Date(cursor.getTime() + dur);
         }
       }
       projectedCount++;
       continue;
     }
 
-    // ── Blocked NOT_BEFORE: skip for now, defer to second pass ──
+    // Blocked NOT_BEFORE → collect for time-slot insertion
     if (s === ListItemStatus.NOT_BEFORE && isBlockedByNotBefore(item, now)) {
-      deferredNotBefore.push(item);
+      blockedNotBefore.push(item);
       continue;
     }
 
-    // ── Eligible items (WAITING, PART_HEARD, unblocked NOT_BEFORE) ──
-    if (cursor === null) {
-      // Projections frozen — clear predictions
-      updates.push({ id: item.id, predictedStartTime: null, predictedEndTime: null });
-      skippedCount++;
-      continue;
-    }
-
-    const duration = (item.estimatedDurationMinutes ?? DEFAULT_ESTIMATE_MINUTES) * 60_000;
-    const start = new Date(cursor.getTime());
-    const end = new Date(cursor.getTime() + duration);
-
-    updates.push({ id: item.id, predictedStartTime: start, predictedEndTime: end });
-    projectedCount++;
-
-    if (nextCallableItemId === null && !isActiveItem(item)) {
-      nextCallableItemId = item.id;
-    }
-
-    cursor = end;
+    // Eligible → queue for projection
+    eligibleQueue.push(item);
   }
 
-  // Step 5: Second pass — deferred NOT_BEFORE items
-  // These items are blocked right now but may become eligible as the cursor
-  // advances. Sort them by notBeforeTime to project in chronological order.
-  deferredNotBefore.sort((a, b) => {
+  // Sort blocked items by notBeforeTime ascending for correct insertion order
+  blockedNotBefore.sort((a, b) => {
     const aTime = a.notBeforeTime?.getTime() ?? 0;
     const bTime = b.notBeforeTime?.getTime() ?? 0;
     return aTime - bTime;
   });
 
-  for (const item of deferredNotBefore) {
+  // ── Step 4: Single-pass projection with time-slot insertion ────────
+  //
+  // Walk through eligible items in queue order. After projecting each one
+  // and advancing the cursor, check if any blocked NOT_BEFORE items have
+  // become unblocked (cursor >= notBeforeTime). If so, insert them at the
+  // current cursor position, advance cursor, then continue.
+  //
+  // Example:
+  //   cursor = 10:00
+  //   A (10m) → projected 10:00–10:10, cursor = 10:10
+  //   B NOT_BEFORE 10:30 → still blocked, skip
+  //   C (5m) → projected 10:10–10:15, cursor = 10:15
+  //   D (30m) → projected 10:15–10:45, cursor = 10:45
+  //     → drain: B is now unblocked (10:45 ≥ 10:30), project B at 10:45
+  //   E (10m) → projected 10:55–11:05
+
+  let blockedIdx = 0; // pointer into sorted blockedNotBefore
+
+  function drainUnblockedItems(): void {
+    if (cursor === null) return;
+    let c: Date = cursor;
+    while (blockedIdx < blockedNotBefore.length) {
+      const blocked = blockedNotBefore[blockedIdx];
+      const notBeforeMs = blocked.notBeforeTime!.getTime();
+      if (c.getTime() >= notBeforeMs) {
+        // Cursor has passed this item's constraint — project it now
+        const dur = durationMs(blocked);
+        const start = new Date(c.getTime());
+        const end = new Date(c.getTime() + dur);
+        updates.push({ id: blocked.id, predictedStartTime: start, predictedEndTime: end });
+        projectedCount++;
+        deferredCount++;
+        if (nextCallableItemId === null) {
+          nextCallableItemId = blocked.id;
+        }
+        c = end;
+        blockedIdx++;
+      } else {
+        break; // remaining blocked items have later notBeforeTime
+      }
+    }
+    cursor = c;
+  }
+
+  for (const item of eligibleQueue) {
     if (cursor === null) {
       updates.push({ id: item.id, predictedStartTime: null, predictedEndTime: null });
       skippedCount++;
       continue;
     }
 
-    const duration = (item.estimatedDurationMinutes ?? DEFAULT_ESTIMATE_MINUTES) * 60_000;
-    // The item cannot start before its notBeforeTime. If the cursor has
-    // already passed that point, use the cursor; otherwise use notBeforeTime.
-    const notBefore = item.notBeforeTime!;
-    const start = cursor > notBefore ? cursor : notBefore;
-    const end = new Date(start.getTime() + duration);
+    const dur = durationMs(item);
+    const start = new Date(cursor.getTime());
+    const end = new Date(cursor.getTime() + dur);
 
     updates.push({ id: item.id, predictedStartTime: start, predictedEndTime: end });
     projectedCount++;
+
+    if (nextCallableItemId === null) {
+      nextCallableItemId = item.id;
+    }
+
+    cursor = end;
+
+    // After advancing cursor, check if any blocked NOT_BEFORE items
+    // have become eligible for insertion at this point in the timeline
+    drainUnblockedItems();
+  }
+
+  // Step 5: Remaining blocked items — all have notBeforeTime in the future
+  // relative to where the cursor ended up. Project each at its notBeforeTime.
+  while (blockedIdx < blockedNotBefore.length) {
+    const blocked = blockedNotBefore[blockedIdx];
+    blockedIdx++;
+
+    if (cursor === null) {
+      updates.push({ id: blocked.id, predictedStartTime: null, predictedEndTime: null });
+      skippedCount++;
+      continue;
+    }
+
+    const dur = durationMs(blocked);
+    const notBefore = blocked.notBeforeTime!;
+    // Start at the later of cursor and notBeforeTime
+    const start = cursor.getTime() > notBefore.getTime() ? cursor : notBefore;
+    const end = new Date(start.getTime() + dur);
+
+    updates.push({ id: blocked.id, predictedStartTime: start, predictedEndTime: end });
+    projectedCount++;
     deferredCount++;
 
-    if (nextCallableItemId === null && !currentItemId) {
-      nextCallableItemId = item.id;
+    if (nextCallableItemId === null) {
+      nextCallableItemId = blocked.id;
     }
 
     cursor = end;
@@ -405,7 +481,7 @@ export async function recomputePredictionsForCourtDay(
     }
   });
 
-  // Step 7b: Broadcast SSE event if projections changed
+  // Broadcast SSE event if projections changed
   if (affectedIds.length > 0) {
     const envelope = buildEnvelope({
       eventId: `recalc_${courtDayId}_${now.getTime()}`,

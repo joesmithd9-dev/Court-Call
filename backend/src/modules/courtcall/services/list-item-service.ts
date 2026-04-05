@@ -247,9 +247,133 @@ export async function startItem(
   listItemId: string,
   actor: ActorContext,
 ): Promise<CommandResult> {
-  return transitionItem(listItemId, ListItemStatus.HEARING, ListItemEventType.STARTED, actor, {
-    actualStartTime: new Date(),
+  // ── Single-active invariant ──────────────────────────────────────────
+  // At most one item may be in HEARING or CALLING at any time. If another
+  // item is currently active when the registrar starts a new one, we
+  // auto-complete the prior item. This mirrors real courtroom behaviour:
+  // the registrar moves on, the previous matter is implicitly concluded.
+  //
+  // The auto-completion writes its own append-only update and SSE event
+  // so the audit trail is complete.
+  const result = await prisma.$transaction(async (tx) => {
+    const target = await tx.listItem.findUniqueOrThrow({ where: { id: listItemId } });
+
+    assertTransitionAllowed(target.status as ListItemStatus, ListItemStatus.HEARING);
+
+    const now = new Date();
+
+    // Find any currently active items on the same court day
+    const activeItems = await tx.listItem.findMany({
+      where: {
+        courtDayId: target.courtDayId,
+        id: { not: listItemId },
+        status: { in: ['HEARING', 'CALLING'] },
+      },
+    });
+
+    // Auto-complete each prior active item
+    for (const active of activeItems) {
+      await tx.listItem.update({
+        where: { id: active.id },
+        data: {
+          status: 'CONCLUDED',
+          actualEndTime: now,
+          // Preserve any existing outcomeCode; default to CONCLUDED if none
+          outcomeCode: active.outcomeCode ?? 'CONCLUDED',
+        },
+      });
+
+      await tx.listItemUpdate.create({
+        data: {
+          listItemId: active.id,
+          courtDayId: target.courtDayId,
+          eventType: ListItemEventType.COMPLETED,
+          actorUserId: actor.userId,
+          actorDisplayName: actor.displayName,
+          actorRole: actor.role,
+          previousStatus: active.status,
+          newStatus: 'CONCLUDED',
+          payloadJson: {
+            autoCompleted: true,
+            reason: 'New item started — prior active item auto-concluded',
+            outcomeCode: active.outcomeCode ?? 'CONCLUDED',
+          } as Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    // Now start the target item
+    const updated = await tx.listItem.update({
+      where: { id: listItemId },
+      data: {
+        status: ListItemStatus.HEARING,
+        actualStartTime: now,
+      },
+    });
+
+    const update = await tx.listItemUpdate.create({
+      data: {
+        listItemId,
+        courtDayId: target.courtDayId,
+        eventType: ListItemEventType.STARTED,
+        actorUserId: actor.userId,
+        actorDisplayName: actor.displayName,
+        actorRole: actor.role,
+        previousStatus: target.status,
+        newStatus: ListItemStatus.HEARING,
+        payloadJson: {
+          autoCompletedPriorItems: activeItems.map((a) => a.id),
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    return {
+      item: updated,
+      update,
+      courtDayId: target.courtDayId,
+      previousStatus: target.status,
+      autoCompletedIds: activeItems.map((a) => a.id),
+    };
   });
+
+  // Broadcast auto-completion events first so subscribers see the prior
+  // item conclude before the new one starts
+  for (const id of result.autoCompletedIds) {
+    const autoEnvelope = buildEnvelope({
+      eventId: `auto_complete_${id}_${Date.now()}`,
+      eventType: ListItemEventType.COMPLETED,
+      aggregateType: 'listitem',
+      aggregateId: id,
+      courtDayId: result.courtDayId,
+      occurredAt: new Date(),
+      actor,
+      payload: {
+        autoCompleted: true,
+        reason: 'New item started — prior active item auto-concluded',
+      },
+    });
+    publish(autoEnvelope);
+  }
+
+  // Broadcast the start event
+  const envelope = buildEnvelope({
+    eventId: result.update.id,
+    eventType: ListItemEventType.STARTED,
+    aggregateType: 'listitem',
+    aggregateId: listItemId,
+    courtDayId: result.courtDayId,
+    occurredAt: result.update.createdAt,
+    actor,
+    payload: {
+      previousStatus: result.previousStatus,
+      newStatus: ListItemStatus.HEARING,
+      autoCompletedPriorItems: result.autoCompletedIds,
+    },
+  });
+
+  publish(envelope);
+  await recomputePredictionsForCourtDay(result.courtDayId);
+  return { listItem: result.item, envelope };
 }
 
 export async function extendEstimate(
