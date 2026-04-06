@@ -22,8 +22,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Cache court-day snapshots for offline
-  if (url.pathname.includes('/court-days/') && !url.pathname.includes('/stream')) {
+  // SECURITY: Only cache PUBLIC snapshots for offline.
+  // Never cache registrar or judge responses — they contain sensitive data
+  // that must not persist on shared/public devices.
+  if (url.pathname.includes('/public/court-days/') && !url.pathname.includes('/stream')) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
@@ -36,10 +38,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network first for API, cache first for assets
+  // Network only for all other API calls (registrar, judge, mutations)
   if (url.pathname.startsWith('/v1')) {
     event.respondWith(fetch(event.request));
   } else {
+    // Cache first for static assets
     event.respondWith(
       caches.match(event.request).then((cached) => cached || fetch(event.request))
     );

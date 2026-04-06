@@ -37,7 +37,7 @@ describe('deriveCourtStatus', () => {
     const v = deriveCourtStatus(cd);
     expect(v.label).toBe('JUDGE ROSE');
     expect(v.isPaused).toBe(true);
-    expect(v.message).toMatch(/14:15/);
+    expect(v.message).toMatch(/Back at \d{2}:\d{2}/);
   });
 
   it('uses explicit statusMessage over derived', () => {

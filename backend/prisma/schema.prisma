@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model CourtDay {
+  id             String   @id @default(uuid())
+  courtName      String
+  courtRoom      String?
+  judgeName      String
+  date           String
+  status         String   @default("scheduled")
+  statusMessage  String?
+  resumeTime     String?
+  currentCaseId  String?
+  lastSequence   Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  cases  CourtCase[]
+  events CourtEvent[]
+}
+
+model CourtCase {
+  id               String   @id @default(uuid())
+  courtDayId       String
+  position         Int
+  caseName         String   @default("")
+  caseTitleFull    String   @default("")
+  caseTitlePublic  String   @default("")
+  caseNumber       String?
+  matterType       String?
+  status           String   @default("pending")
+  scheduledTime    String?
+  startedAt        String?
+  estimatedMinutes Int?
+  predictedStartTime String?
+  notBeforeTime    String?
+  adjournedToTime  String?
+  note             String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  courtDay CourtDay @relation(fields: [courtDayId], references: [id])
+
+  @@unique([courtDayId, position])
+}
+
+model CourtEvent {
+  id                String   @id @default(uuid())
+  courtDayId        String
+  sequence          Int
+  type              String
+  data              String
+  actorRole         String   @default("system")
+  idempotencyKey    String?
+  undoneByEventId   String?
+  undoTargetEventId String?
+  createdAt         DateTime @default(now())
+
+  courtDay CourtDay @relation(fields: [courtDayId], references: [id])
+
+  @@unique([courtDayId, sequence])
+  @@unique([courtDayId, idempotencyKey])
+}
