@@ -9,6 +9,11 @@ import {
   deriveFullList,
   deriveUndoState,
   deriveMeta,
+  deriveTimeBandGroups,
+  deriveMatterTypeGroups,
+  deriveGapFillerMatters,
+  deriveDurationColor,
+  deriveDurationLabel,
 } from '../viewModel/courtDayViewModel';
 
 beforeEach(() => resetCounters());
@@ -236,5 +241,196 @@ describe('deriveMeta', () => {
     const m = deriveMeta(cd, false, 0, 'CRITICAL: something');
     expect(m.criticalError).toBe('CRITICAL: something');
     expect(m.connected).toBe(false);
+  });
+});
+
+// ========================================
+// Duration helpers
+// ========================================
+
+describe('deriveDurationColor', () => {
+  it('green for ≤5 min', () => {
+    expect(deriveDurationColor(3)).toMatch(/court-active/);
+    expect(deriveDurationColor(5)).toMatch(/court-active/);
+  });
+
+  it('amber for 11–20 min', () => {
+    expect(deriveDurationColor(15)).toMatch(/court-warning/);
+  });
+
+  it('red for >20 min', () => {
+    expect(deriveDurationColor(25)).toMatch(/court-danger/);
+  });
+
+  it('dim for undefined', () => {
+    expect(deriveDurationColor(undefined)).toMatch(/court-text-dim/);
+  });
+});
+
+describe('deriveDurationLabel', () => {
+  it('formats minutes', () => {
+    expect(deriveDurationLabel(10)).toBe('10m');
+  });
+  it('empty for undefined', () => {
+    expect(deriveDurationLabel(undefined)).toBe('');
+  });
+});
+
+// ========================================
+// Time band grouping
+// ========================================
+
+describe('deriveTimeBandGroups', () => {
+  it('groups pending cases into time bands', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, estimatedMinutes: 3 }),
+      makeCase({ id: 'b', status: 'pending', position: 2, estimatedMinutes: 5 }),
+      makeCase({ id: 'c', status: 'pending', position: 3, estimatedMinutes: 15 }),
+      makeCase({ id: 'd', status: 'pending', position: 4, estimatedMinutes: 45 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const bands = deriveTimeBandGroups(cd, 'judge');
+
+    expect(bands.length).toBeGreaterThanOrEqual(3);
+    const shortBand = bands.find((b) => b.label === '5 min or less');
+    expect(shortBand).toBeDefined();
+    expect(shortBand!.items).toHaveLength(2);
+    expect(shortBand!.totalMinutes).toBe(8);
+
+    const longBand = bands.find((b) => b.label === 'Over 30 min');
+    expect(longBand).toBeDefined();
+    expect(longBand!.items).toHaveLength(1);
+  });
+
+  it('excludes adjourned and stood_down', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, estimatedMinutes: 5 }),
+      makeCase({ id: 'b', status: 'adjourned', position: 2, estimatedMinutes: 5 }),
+      makeCase({ id: 'c', status: 'stood_down', position: 3, estimatedMinutes: 5 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const bands = deriveTimeBandGroups(cd, 'judge');
+    const total = bands.reduce((s, b) => s + b.items.length, 0);
+    expect(total).toBe(1); // only 'a'
+  });
+
+  it('defaults unknown duration to 5 min', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1 }), // no estimatedMinutes
+    ];
+    const cd = makeCourtDay({ cases });
+    const bands = deriveTimeBandGroups(cd, 'judge');
+    expect(bands[0].label).toBe('5 min or less');
+    expect(bands[0].items).toHaveLength(1);
+  });
+});
+
+// ========================================
+// Matter type grouping
+// ========================================
+
+describe('deriveMatterTypeGroups', () => {
+  it('groups by matter type', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, matterType: 'mention', estimatedMinutes: 5 }),
+      makeCase({ id: 'b', status: 'pending', position: 2, matterType: 'mention', estimatedMinutes: 3 }),
+      makeCase({ id: 'c', status: 'pending', position: 3, matterType: 'hearing', estimatedMinutes: 30 }),
+      makeCase({ id: 'd', status: 'pending', position: 4, matterType: 'bail', estimatedMinutes: 10 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const groups = deriveMatterTypeGroups(cd, 'judge');
+
+    expect(groups.length).toBe(3);
+    const mentionGroup = groups.find((g) => g.type === 'mention')!;
+    expect(mentionGroup.items).toHaveLength(2);
+    expect(mentionGroup.totalMinutes).toBe(8);
+    expect(mentionGroup.averageMinutes).toBe(4);
+  });
+
+  it('groups cases with no matterType as "unknown"', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1 }), // no matterType
+    ];
+    const cd = makeCourtDay({ cases });
+    const groups = deriveMatterTypeGroups(cd, 'judge');
+    expect(groups[0].type).toBe('unknown');
+    expect(groups[0].label).toBe('Other');
+  });
+});
+
+// ========================================
+// Gap filler
+// ========================================
+
+describe('deriveGapFillerMatters', () => {
+  it('returns matters that fit within N minutes, sorted shortest first', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, estimatedMinutes: 3 }),
+      makeCase({ id: 'b', status: 'pending', position: 2, estimatedMinutes: 15 }),
+      makeCase({ id: 'c', status: 'pending', position: 3, estimatedMinutes: 8 }),
+      makeCase({ id: 'd', status: 'pending', position: 4, estimatedMinutes: 5 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const result = deriveGapFillerMatters(cd, 'judge', 10);
+
+    expect(result).toHaveLength(3); // a, c, d
+    expect(result[0].id).toBe('a'); // 3m first
+    expect(result[1].id).toBe('d'); // 5m
+    expect(result[2].id).toBe('c'); // 8m
+  });
+
+  it('excludes adjourned, stood_down, not_before', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, estimatedMinutes: 5 }),
+      makeCase({ id: 'b', status: 'adjourned', position: 2, estimatedMinutes: 3 }),
+      makeCase({ id: 'c', status: 'stood_down', position: 3, estimatedMinutes: 3 }),
+      makeCase({ id: 'd', status: 'not_before', position: 4, estimatedMinutes: 3 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const result = deriveGapFillerMatters(cd, 'judge', 10);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('a');
+  });
+
+  it('returns empty when no matters fit', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, estimatedMinutes: 30 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    expect(deriveGapFillerMatters(cd, 'judge', 5)).toHaveLength(0);
+  });
+});
+
+// ========================================
+// Queue items include duration and matterType
+// ========================================
+
+describe('queue items include duration and matterType', () => {
+  it('queue items have durationLabel and durationColor', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, estimatedMinutes: 10 }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const q = deriveQueue(cd, 'registrar');
+    expect(q[0].durationLabel).toBe('10m');
+    expect(q[0].durationColor).toBeTruthy();
+  });
+
+  it('queue items have matterTypeLabel', () => {
+    const cases = [
+      makeCase({ id: 'a', status: 'pending', position: 1, matterType: 'bail' }),
+    ];
+    const cd = makeCourtDay({ cases });
+    const q = deriveQueue(cd, 'registrar');
+    expect(q[0].matterTypeLabel).toBe('Bail');
+  });
+
+  it('active case has matterTypeLabel and duration', () => {
+    const c = makeCase({ id: 'a', status: 'hearing', estimatedMinutes: 20, matterType: 'hearing' });
+    const cd = makeCourtDay({ currentCaseId: 'a', cases: [c] });
+    const v = deriveActiveCase(cd, 'judge')!;
+    expect(v.matterTypeLabel).toBe('Hearing');
+    expect(v.durationLabel).toBe('20m');
+    expect(v.durationColor).toMatch(/court-warning/);
   });
 });

@@ -251,6 +251,9 @@ export function RegistrarScreen() {
               <div key={item.id} className="flex items-center gap-3 py-1">
                 <span className="text-sm font-mono text-court-text-dim w-5 text-right shrink-0">{i + 1}</span>
                 <span className="text-sm text-white truncate flex-1">{item.title}</span>
+                {item.durationLabel && (
+                  <span className={`text-xs font-bold tabular-nums shrink-0 ${item.durationColor}`}>{item.durationLabel}</span>
+                )}
                 <Badge status={item.status} label={item.statusLabel} />
                 {item.timeLabel && <span className="text-xs text-court-text-dim">{item.timeLabel}</span>}
               </div>
@@ -285,6 +288,12 @@ export function RegistrarScreen() {
                 </p>
                 {item.note && <p className="text-xs text-court-text-dim truncate italic">{item.note}</p>}
               </div>
+              {item.matterTypeLabel && (
+                <span className="text-xs text-court-text-dim bg-court-surface-2 px-1.5 py-0.5 rounded shrink-0">{item.matterTypeLabel}</span>
+              )}
+              {item.durationLabel && (
+                <span className={`text-xs font-bold tabular-nums shrink-0 ${item.durationColor}`}>{item.durationLabel}</span>
+              )}
               <Badge status={item.status} label={item.statusLabel} />
               {item.timeLabel && <span className="text-xs text-court-text-dim">{item.timeLabel}</span>}
             </div>
