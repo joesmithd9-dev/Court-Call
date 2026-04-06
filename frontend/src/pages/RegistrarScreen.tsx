@@ -18,6 +18,7 @@ import { NotBeforeSheet } from '../components/registrar/NotBeforeSheet';
 import { NoteInput } from '../components/registrar/NoteInput';
 
 type SheetType = 'adjourn' | 'not_before' | null;
+type RegView = 'live' | 'list' | 'stood';
 
 export function RegistrarScreen() {
   const { courtDayId } = useParams<{ courtDayId: string }>();
@@ -27,6 +28,7 @@ export function RegistrarScreen() {
 
   const vm = useCourtDayView('registrar');
 
+  const [view, setView] = useState<RegView>('live');
   const [activeSheet, setActiveSheet] = useState<SheetType>(null);
   const [sheetCaseId, setSheetCaseId] = useState<string | null>(null);
   const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
@@ -45,7 +47,7 @@ export function RegistrarScreen() {
     [setLastAction]
   );
 
-  // ---- Action handlers ----
+  // ---- Unified action handler ----
 
   const act = useCallback(async (caseId: string, action: string, extra?: Record<string, unknown>) => {
     switch (action) {
@@ -106,7 +108,6 @@ export function RegistrarScreen() {
         break;
       }
       case 'take_next': {
-        // Move this case to position 2 (right after current)
         const r = await reorderCase(id, { caseId, newPosition: 1 });
         replaceSnapshot(r);
         showToast('Moved to next');
@@ -215,8 +216,9 @@ export function RegistrarScreen() {
     );
   }
 
-  const { meta, courtStatus, activeCase, fullList, undo, toast, concluded } = vm;
+  const { meta, courtStatus, activeCase, nextUp, fullList, undo, toast, concluded } = vm;
   const pendingCount = fullList.filter((i) => i.status === 'pending' || i.status === 'calling').length;
+  const stoodCount = fullList.filter((i) => i.status === 'stood_down').length;
   const totalEstMin = fullList
     .filter(i => i.status !== 'concluded' && i.status !== 'vacated')
     .reduce((s, i) => s + (i.estimatedMinutes ?? 0), 0);
@@ -243,130 +245,264 @@ export function RegistrarScreen() {
 
       <StatusBar status={courtStatus} />
 
-      {/* Active case — compact, always visible */}
-      {activeCase && (
-        <div className="px-4 py-2.5 bg-court-active-bg/40 border-b border-court-active/20">
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-court-active font-bold uppercase tracking-widest shrink-0">Now</span>
-            <span className="text-sm text-white font-semibold truncate flex-1">{activeCase.title}</span>
-            {activeCase.estimatedMinutes != null && (
-              <span className={`text-xs font-bold tabular-nums ${activeCase.durationColor}`}>{activeCase.durationLabel}</span>
-            )}
-            <Badge status={activeCase.status} label={activeCase.statusLabel} />
-          </div>
+      {/* View tabs */}
+      <div className="flex border-b border-court-border">
+        {([
+          ['live', 'Live'],
+          ['list', 'List'],
+          ['stood', `Stood (${stoodCount})`],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`flex-1 py-2 text-[10px] font-semibold uppercase tracking-widest transition-colors ${
+              view === key ? 'text-white border-b-2 border-court-active' : 'text-court-text-dim'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ===== LIVE VIEW ===== */}
+      {view === 'live' && (
+        <>
+          {/* Active case — large card */}
+          {activeCase ? (
+            <div className="mx-4 my-3 p-4 rounded-xl bg-court-active-bg border border-court-active/30">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-court-active font-semibold uppercase tracking-widest mb-1">Current Case</p>
+                  <h2 className="text-xl font-bold text-white truncate">{activeCase.title}</h2>
+                  {activeCase.caseNumber && <p className="text-sm text-court-text-dim mt-0.5">{activeCase.caseNumber}</p>}
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <Badge status={activeCase.status} label={activeCase.statusLabel} />
+                  {activeCase.estimatedMinutes != null && (
+                    <span className={`text-sm font-bold tabular-nums ${activeCase.durationColor}`}>{activeCase.durationLabel}</span>
+                  )}
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-4 text-xs text-court-text-dim">
+                {activeCase.startedAt && <span>Started {activeCase.startedAt}</span>}
+                {activeCase.matterTypeLabel && <span>{activeCase.matterTypeLabel}</span>}
+                {activeCase.estimatedMinutes != null && <span>~{activeCase.estimatedMinutes} min</span>}
+              </div>
+              {activeCase.note && (
+                <p className="mt-2 text-xs text-court-text-dim italic border-t border-court-active/20 pt-2">{activeCase.note}</p>
+              )}
+            </div>
+          ) : (
+            <div className="px-4 py-6 text-center text-court-text-dim text-sm">No case currently active</div>
+          )}
+
           {/* Quick actions for active case */}
-          <div className="flex flex-wrap gap-1.5 mt-2">
-            <Chip label="+5" onClick={() => { if (!activeCase) return; act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 5 }); }} />
-            <Chip label="+10" onClick={() => { if (!activeCase) return; act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 10 }); }} />
-            <Chip label="Done" onClick={() => act(activeCase.id, 'done')} variant="active" />
-            <Chip label="Stand" onClick={() => act(activeCase.id, 'stood_down')} variant="warning" />
-            <Chip label="Adjourn" onClick={() => { setSheetCaseId(activeCase.id); setActiveSheet('adjourn'); }} variant="danger" />
+          <div className="px-4 py-2.5 flex flex-wrap gap-2 border-b border-court-border">
+            {activeCase && (
+              <>
+                <Chip label="+5" onClick={() => act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 5 })} />
+                <Chip label="+10" onClick={() => act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 10 })} />
+                <Chip label="Done" onClick={() => act(activeCase.id, 'done')} variant="active" />
+                <Chip label="Stand" onClick={() => act(activeCase.id, 'stood_down')} variant="warning" />
+                <Chip label="Adjourn" onClick={() => { setSheetCaseId(activeCase.id); setActiveSheet('adjourn'); }} variant="danger" />
+              </>
+            )}
             {undo.available && <Chip label={undo.label} onClick={handleUndo} variant="undo" />}
           </div>
+
+          {/* Next up strip */}
+          {nextUp.length > 0 && (
+            <div className="px-4 py-3 border-b border-court-border">
+              <p className="text-xs text-court-text-dim font-semibold uppercase tracking-widest mb-2">Next Up</p>
+              <div className="space-y-2">
+                {nextUp.map((item, i) => (
+                  <div key={item.id} className="flex items-center gap-3 py-1">
+                    <span className="text-sm font-mono text-court-text-dim w-5 text-right shrink-0">{i + 1}</span>
+                    <span className="text-sm text-white truncate flex-1">{item.title}</span>
+                    {item.matterTypeLabel && (
+                      <span className="text-[10px] text-court-text-dim bg-court-surface-2 px-1 py-0.5 rounded shrink-0">{item.matterTypeLabel}</span>
+                    )}
+                    {item.durationLabel && (
+                      <span className={`text-xs font-bold tabular-nums shrink-0 ${item.durationColor}`}>{item.durationLabel}</span>
+                    )}
+                    <Badge status={item.status} label={item.statusLabel} />
+                    {item.timeLabel && <span className="text-xs text-court-text-dim shrink-0">{item.timeLabel}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Summary + compact list */}
+          <div className="px-4 py-1.5 bg-court-surface-2 border-b border-court-border flex items-center gap-3 text-xs text-court-text-dim">
+            <span>{fullList.length} matters</span>
+            <span className="text-court-active">{pendingCount} pending</span>
+            <span>{concluded.length} done</span>
+            {totalEstMin > 0 && <span className="ml-auto">~{totalEstMin}m</span>}
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {fullList.map((item) => {
+              const isCurrent = activeCase?.id === item.id;
+              const isDone = item.status === 'concluded' || item.status === 'vacated';
+              return (
+                <div key={item.id}>
+                  <div
+                    onClick={() => setExpandedCaseId(expandedCaseId === item.id ? null : item.id)}
+                    className={`px-4 py-2 border-b border-court-border flex items-center gap-2 cursor-pointer ${
+                      isCurrent ? 'bg-court-active-bg/30' : isDone ? 'opacity-40' : ''
+                    }`}
+                  >
+                    <span className="text-xs font-mono text-court-text-dim w-5 text-right shrink-0">{item.position}</span>
+                    <span className={`text-sm truncate flex-1 ${isCurrent ? 'text-white font-semibold' : isDone ? 'text-court-text-dim line-through' : 'text-court-text'}`}>
+                      {item.title}
+                    </span>
+                    {item.durationLabel && (
+                      <span className={`text-xs font-bold tabular-nums shrink-0 ${item.durationColor}`}>{item.durationLabel}</span>
+                    )}
+                    <Badge status={item.status} label={item.statusLabel} />
+                  </div>
+                  {expandedCaseId === item.id && !isDone && (
+                    <RowActions item={item} isCurrent={isCurrent} onAction={act} onNote={() => setEditingNoteId(item.id)} />
+                  )}
+                  {editingNoteId === item.id && (
+                    <div className="px-4 py-2 bg-court-surface-2 border-b border-court-border">
+                      <NoteInput initialValue={item.note ?? ''} onSave={(note) => handleSaveNote(item.id, note)} onCancel={() => setEditingNoteId(null)} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ===== LIST VIEW (full callover) ===== */}
+      {view === 'list' && (
+        <>
+          {/* Compact active strip */}
+          {activeCase && (
+            <div className="px-4 py-2 bg-court-active-bg/40 border-b border-court-active/20 flex items-center gap-3">
+              <span className="text-xs text-court-active font-bold uppercase tracking-widest shrink-0">Now</span>
+              <span className="text-sm text-white font-semibold truncate flex-1">{activeCase.title}</span>
+              {activeCase.durationLabel && <span className={`text-xs font-bold tabular-nums ${activeCase.durationColor}`}>{activeCase.durationLabel}</span>}
+              <Badge status={activeCase.status} label={activeCase.statusLabel} />
+              <div className="flex gap-1 shrink-0">
+                <Chip label="+5" onClick={() => act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 5 })} />
+                <Chip label="Done" onClick={() => act(activeCase.id, 'done')} variant="active" />
+                {undo.available && <Chip label="Undo" onClick={handleUndo} variant="undo" />}
+              </div>
+            </div>
+          )}
+
+          <div className="px-4 py-1.5 bg-court-surface-2 border-b border-court-border flex items-center gap-3 text-xs text-court-text-dim">
+            <span>{fullList.length} matters</span>
+            <span className="text-court-active">{pendingCount} pending</span>
+            <span>{concluded.length} done</span>
+            {totalEstMin > 0 && <span className="ml-auto">~{totalEstMin}m</span>}
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {fullList.map((item) => {
+              const isCurrent = activeCase?.id === item.id;
+              const isDone = item.status === 'concluded' || item.status === 'vacated';
+              const isExpanded = expandedCaseId === item.id;
+
+              return (
+                <div key={item.id}>
+                  <div
+                    onClick={() => setExpandedCaseId(isExpanded ? null : item.id)}
+                    className={`px-4 py-2 border-b border-court-border cursor-pointer ${
+                      isCurrent ? 'bg-court-active-bg/30' :
+                      isDone ? 'opacity-40' :
+                      item.isNotBefore ? 'border-l-2 border-l-court-warning/60' : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-court-text-dim w-5 text-right shrink-0">{item.position}</span>
+                      <span className={`text-sm truncate flex-1 ${isCurrent ? 'text-white font-semibold' : isDone ? 'text-court-text-dim line-through' : 'text-white'}`}>
+                        {item.title}
+                      </span>
+                      {item.matterTypeLabel && (
+                        <span className="text-[10px] text-court-text-dim bg-court-surface-2 px-1 py-0.5 rounded shrink-0">{item.matterTypeLabel}</span>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDurationPickerId(durationPickerId === item.id ? null : item.id); }}
+                        className={`text-xs font-bold tabular-nums shrink-0 px-1.5 py-0.5 rounded ${item.durationLabel ? item.durationColor : 'text-court-text-dim'} hover:bg-court-surface-2`}
+                      >
+                        {item.durationLabel || '—'}
+                      </button>
+                      <Badge status={item.status} label={item.statusLabel} />
+                      {item.timeLabel && (
+                        <span className={`text-[10px] shrink-0 ${item.isNotBefore ? 'text-court-warning font-medium' : 'text-court-text-dim'}`}>
+                          {item.timeLabel}
+                        </span>
+                      )}
+                    </div>
+                    {item.note && <p className="text-[10px] text-court-text-dim italic ml-7 mt-0.5 truncate">{item.note}</p>}
+                  </div>
+
+                  {durationPickerId === item.id && (
+                    <div className="px-4 py-1.5 bg-court-surface border-b border-court-border flex items-center gap-1.5 ml-7">
+                      <span className="text-[10px] text-court-text-dim mr-1">Est:</span>
+                      {[3, 5, 10, 15, 20, 30, 45, 60].map((m) => (
+                        <button key={m} onClick={() => act(item.id, 'set_duration', { minutes: m })}
+                          className={`px-2 py-1 rounded text-[10px] font-semibold ${item.estimatedMinutes === m ? 'bg-court-active/20 text-court-active' : 'bg-court-surface-2 text-court-text-dim hover:bg-court-border'}`}
+                        >{m}m</button>
+                      ))}
+                    </div>
+                  )}
+
+                  {isExpanded && !isDone && (
+                    <RowActions item={item} isCurrent={isCurrent} onAction={act} onNote={() => setEditingNoteId(item.id)} />
+                  )}
+                  {editingNoteId === item.id && (
+                    <div className="px-4 py-2 bg-court-surface-2 border-b border-court-border">
+                      <NoteInput initialValue={item.note ?? ''} onSave={(note) => handleSaveNote(item.id, note)} onCancel={() => setEditingNoteId(null)} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ===== STOOD VIEW ===== */}
+      {view === 'stood' && (
+        <div className="flex-1 overflow-y-auto px-4 py-3">
+          <p className="text-xs text-court-text-dim font-semibold uppercase tracking-widest mb-3">Stood Down / Let Stand</p>
+          {fullList.filter(i => i.status === 'stood_down').length === 0 ? (
+            <p className="text-court-text-dim text-sm py-4 text-center">None stood down</p>
+          ) : (
+            <div className="space-y-1">
+              {fullList.filter(i => i.status === 'stood_down').map((item) => (
+                <div key={item.id}>
+                  <div
+                    onClick={() => setExpandedCaseId(expandedCaseId === item.id ? null : item.id)}
+                    className="flex items-center gap-3 py-2 cursor-pointer border-l-2 border-l-court-warning/50 pl-2"
+                  >
+                    <span className="text-sm font-mono text-court-text-dim w-6 text-right shrink-0">{item.position}</span>
+                    <span className="text-sm text-white truncate flex-1">{item.title}</span>
+                    {item.durationLabel && <span className={`text-xs font-bold tabular-nums ${item.durationColor}`}>{item.durationLabel}</span>}
+                    <Badge status={item.status} label={item.statusLabel} />
+                  </div>
+                  {expandedCaseId === item.id && (
+                    <RowActions item={item} isCurrent={false} onAction={act} onNote={() => setEditingNoteId(item.id)} />
+                  )}
+                  {editingNoteId === item.id && (
+                    <div className="px-4 py-2 bg-court-surface-2 border-b border-court-border">
+                      <NoteInput initialValue={item.note ?? ''} onSave={(note) => handleSaveNote(item.id, note)} onCancel={() => setEditingNoteId(null)} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Summary bar */}
-      <div className="px-4 py-1.5 bg-court-surface-2 border-b border-court-border flex items-center gap-3 text-xs text-court-text-dim">
-        <span>{fullList.length} matters</span>
-        <span className="text-court-active">{pendingCount} pending</span>
-        <span>{concluded.length} done</span>
-        {totalEstMin > 0 && <span className="ml-auto">~{totalEstMin}m remaining</span>}
-      </div>
-
-      {/* ===== CALLOVER LIST — the primary view ===== */}
-      <div className="flex-1 overflow-y-auto">
-        {fullList.map((item) => {
-          const isCurrent = activeCase?.id === item.id;
-          const isDone = item.status === 'concluded' || item.status === 'vacated';
-          const isExpanded = expandedCaseId === item.id;
-
-          return (
-            <div key={item.id}>
-              <div
-                onClick={() => setExpandedCaseId(isExpanded ? null : item.id)}
-                className={`px-4 py-2 border-b border-court-border cursor-pointer ${
-                  isCurrent ? 'bg-court-active-bg/30' :
-                  isDone ? 'opacity-40' :
-                  item.isNotBefore ? 'border-l-2 border-l-court-warning/60' :
-                  ''
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono text-court-text-dim w-5 text-right shrink-0">{item.position}</span>
-                  <span className={`text-sm truncate flex-1 ${isCurrent ? 'text-white font-semibold' : isDone ? 'text-court-text-dim line-through' : 'text-white'}`}>
-                    {item.title}
-                  </span>
-                  {item.matterTypeLabel && (
-                    <span className="text-[10px] text-court-text-dim bg-court-surface-2 px-1 py-0.5 rounded shrink-0">{item.matterTypeLabel}</span>
-                  )}
-                  {/* Duration — tappable to change */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setDurationPickerId(durationPickerId === item.id ? null : item.id); }}
-                    className={`text-xs font-bold tabular-nums shrink-0 px-1.5 py-0.5 rounded ${item.durationLabel ? item.durationColor : 'text-court-text-dim'} hover:bg-court-surface-2`}
-                  >
-                    {item.durationLabel || '—'}
-                  </button>
-                  <Badge status={item.status} label={item.statusLabel} />
-                  {item.timeLabel && (
-                    <span className={`text-[10px] shrink-0 ${item.isNotBefore ? 'text-court-warning font-medium' : 'text-court-text-dim'}`}>
-                      {item.timeLabel}
-                    </span>
-                  )}
-                </div>
-
-                {/* Row 2: note if present */}
-                {item.note && (
-                  <p className="text-[10px] text-court-text-dim italic ml-7 mt-0.5 truncate">{item.note}</p>
-                )}
-              </div>
-
-              {/* Duration picker */}
-              {durationPickerId === item.id && (
-                <div className="px-4 py-1.5 bg-court-surface border-b border-court-border flex items-center gap-1.5 ml-7">
-                  <span className="text-[10px] text-court-text-dim mr-1">Est:</span>
-                  {[3, 5, 10, 15, 20, 30, 45, 60].map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => act(item.id, 'set_duration', { minutes: m })}
-                      className={`px-2 py-1 rounded text-[10px] font-semibold ${
-                        item.estimatedMinutes === m
-                          ? 'bg-court-active/20 text-court-active'
-                          : 'bg-court-surface-2 text-court-text-dim hover:bg-court-border'
-                      }`}
-                    >
-                      {m}m
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Expanded actions */}
-              {isExpanded && !isDone && (
-                <RowActions
-                  item={item}
-                  isCurrent={isCurrent}
-                  onAction={act}
-                  onNote={() => setEditingNoteId(item.id)}
-                />
-              )}
-
-              {/* Note editor */}
-              {editingNoteId === item.id && (
-                <div className="px-4 py-2 bg-court-surface-2 border-b border-court-border">
-                  <NoteInput
-                    initialValue={item.note ?? ''}
-                    onSave={(note) => handleSaveNote(item.id, note)}
-                    onCancel={() => setEditingNoteId(null)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Bottom controls */}
+      {/* Bottom controls — always visible */}
       <div className="px-4 py-2.5 bg-court-surface border-t border-court-border">
         <div className="flex flex-wrap gap-2">
           <TapBtn label="Start Next" onAction={handleStartNext} variant="active" wide />
@@ -399,10 +535,7 @@ export function RegistrarScreen() {
 // ---- Row Actions ----
 
 function RowActions({
-  item,
-  isCurrent,
-  onAction,
-  onNote,
+  item, isCurrent, onAction, onNote,
 }: {
   item: QueueItemView;
   isCurrent: boolean;
@@ -418,23 +551,15 @@ function RowActions({
 
   return (
     <div className={`px-4 py-2 bg-court-surface-2 border-b border-court-border ${locked ? 'opacity-50 pointer-events-none' : ''}`}>
-      {/* Primary actions */}
       <div className="flex flex-wrap gap-1.5">
-        {item.status === 'pending' && (
-          <Chip label="Calling" onClick={() => tap('calling')} variant="warning" />
-        )}
-        {(item.status === 'pending' || item.status === 'calling') && (
-          <Chip label="Hear Now" onClick={() => tap('hearing')} variant="active" />
-        )}
-        {!isCurrent && item.status !== 'concluded' && (
-          <Chip label="Done" onClick={() => tap('done')} />
-        )}
+        {item.status === 'pending' && <Chip label="Calling" onClick={() => tap('calling')} variant="warning" />}
+        {(item.status === 'pending' || item.status === 'calling') && <Chip label="Hear Now" onClick={() => tap('hearing')} variant="active" />}
+        {!isCurrent && item.status !== 'concluded' && <Chip label="Done" onClick={() => tap('done')} />}
         <Chip label="Stand" onClick={() => tap('stood_down')} />
         <Chip label="Adjourn" onClick={() => tap('adjourn')} variant="danger" />
         <Chip label="Not Before" onClick={() => tap('not_before')} />
         <Chip label="Note" onClick={onNote} />
       </div>
-      {/* Queue + other actions */}
       <div className="flex flex-wrap gap-1.5 mt-1.5 pt-1.5 border-t border-court-border/50">
         <Chip label="Take Next" onClick={() => tap('take_next')} variant="active" />
         <Chip label="Move Up" onClick={() => tap('move_up')} />
@@ -482,13 +607,7 @@ function Badge({ status, label }: { status: string; label: string }) {
   );
 }
 
-function Chip({
-  label, onClick, variant = 'default',
-}: {
-  label: string;
-  onClick: () => void;
-  variant?: 'default' | 'active' | 'danger' | 'warning' | 'undo';
-}) {
+function Chip({ label, onClick, variant = 'default' }: { label: string; onClick: () => void; variant?: 'default' | 'active' | 'danger' | 'warning' | 'undo' }) {
   const cls: Record<string, string> = {
     default: 'bg-court-surface text-court-text hover:bg-court-border',
     active: 'bg-court-active/20 text-court-active hover:bg-court-active/30',
@@ -496,21 +615,10 @@ function Chip({
     warning: 'bg-court-warning/20 text-court-warning hover:bg-court-warning/30',
     undo: 'bg-court-surface text-court-warning border border-court-warning/30',
   };
-  return (
-    <button onClick={onClick} className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${cls[variant]}`}>
-      {label}
-    </button>
-  );
+  return <button onClick={onClick} className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${cls[variant]}`}>{label}</button>;
 }
 
-function TapBtn({
-  label, onAction, variant, wide,
-}: {
-  label: string;
-  onAction: () => Promise<void> | void;
-  variant: 'active' | 'danger' | 'warning' | 'dim';
-  wide?: boolean;
-}) {
+function TapBtn({ label, onAction, variant, wide }: { label: string; onAction: () => Promise<void> | void; variant: 'active' | 'danger' | 'warning' | 'dim'; wide?: boolean }) {
   const [locked, setLocked] = useState(false);
   const colors: Record<string, string> = {
     active: 'bg-court-active/20 text-court-active hover:bg-court-active/30',
@@ -519,19 +627,9 @@ function TapBtn({
     dim: 'bg-court-surface-2 text-court-text-dim',
   };
   return (
-    <button
-      disabled={locked}
-      onClick={async () => {
-        if (locked) return;
-        setLocked(true);
-        try { await onAction(); } finally { setTimeout(() => setLocked(false), 500); }
-      }}
-      className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${colors[variant]} ${
-        wide ? 'flex-1 min-w-[80px]' : ''
-      } ${locked ? 'opacity-50 pointer-events-none' : ''}`}
-    >
-      {label}
-    </button>
+    <button disabled={locked} onClick={async () => { if (locked) return; setLocked(true); try { await onAction(); } finally { setTimeout(() => setLocked(false), 500); } }}
+      className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${colors[variant]} ${wide ? 'flex-1 min-w-[80px]' : ''} ${locked ? 'opacity-50 pointer-events-none' : ''}`}
+    >{label}</button>
   );
 }
 
