@@ -2,31 +2,25 @@ import type { CourtDay } from '@prisma/client';
 import { prisma } from './prisma.js';
 import { buildEnvelope } from './event-envelope-service.js';
 import { publish } from './sse-broadcaster.js';
-import { CourtDayStatus } from '../domain/enums.js';
+import { CourtDayStatus, CourtSessionStatus } from '../domain/enums.js';
 import { CourtDayEventType } from '../domain/event-types.js';
 import type { ActorContext, CourtCallEventEnvelope } from '../domain/types.js';
 import type {
   CreateCourtDayInput,
   StartLiveInput,
   JudgeRoseInput,
-  AtLunchInput,
   ResumeInput,
-  ConcludeCourtDayInput,
+  CloseCourtDayInput,
 } from '../dto/requests.js';
-import { bridgeCourtRose, bridgeCourtResumed } from './event-bridge.js';
 
-// ──�� Helpers ────────────────────────────────────────────────────────────────
+import { recomputePredictionsForCourtDay } from './recalculation-engine.js';
+import { lockCourtDayRow, nextStreamVersion } from './stream-version-service.js';
 
-type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
-
-async function nextSequence(tx: TxClient, courtDayId: string): Promise<number> {
-  const updated = await tx.courtDay.update({
-    where: { id: courtDayId },
-    data: { lastSequence: { increment: 1 } },
-    select: { lastSequence: true },
-  });
-  return updated.lastSequence;
-}
+/**
+ * Re-export the recalculation engine for consumers (e.g. list-item-service)
+ * that import it from this module for historical reasons.
+ */
+export { recomputePredictionsForCourtDay };
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
@@ -39,28 +33,31 @@ export async function createCourtDay(
       data: {
         courtId: input.courtId,
         date: new Date(input.date),
-        judgeName: input.judgeName ?? null,
-        sessionPeriod: (input.sessionPeriod as any) ?? 'MORNING',
-        registrarId: input.registrarId ?? null,
-        publicNote: input.publicNote ?? null,
-        status: CourtDayStatus.SETUP,
+        judgeName: input.judgeName,
+        registrarName: input.registrarName,
+        streamVersion: 1,
+        status: CourtDayStatus.SCHEDULED,
+        sessionStatus: CourtSessionStatus.BEFORE_SITTING,
       },
     });
-
-    const seq = await nextSequence(tx, courtDay.id);
 
     const update = await tx.courtDayUpdate.create({
       data: {
         courtDayId: courtDay.id,
-        sequence: seq,
         eventType: CourtDayEventType.CREATED,
-        newStatus: CourtDayStatus.SETUP as any,
-        publicNote: input.publicNote ?? null,
-        updatedById: actor.userId ?? null,
+        actorUserId: actor.userId,
+        actorDisplayName: actor.displayName,
+        actorRole: actor.role,
+        payloadJson: {
+          courtId: input.courtId,
+          date: input.date,
+          judgeName: input.judgeName,
+          registrarName: input.registrarName,
+        },
       },
     });
 
-    return { courtDay, update, seq };
+    return { courtDay, update, version: courtDay.streamVersion };
   });
 
   const envelope = buildEnvelope({
@@ -69,13 +66,14 @@ export async function createCourtDay(
     aggregateType: 'courtday',
     aggregateId: result.courtDay.id,
     courtDayId: result.courtDay.id,
-    occurredAt: result.update.timestamp,
-    sequence: result.seq,
+    occurredAt: result.update.createdAt,
     actor,
+    version: result.version,
     payload: {
       courtId: input.courtId,
       date: input.date,
-      judgeName: input.judgeName ?? null,
+      judgeName: input.judgeName,
+      registrarName: input.registrarName,
     },
   });
 
@@ -89,10 +87,11 @@ export async function startLive(
   actor: ActorContext,
 ): Promise<{ courtDay: CourtDay; envelope: CourtCallEventEnvelope }> {
   const result = await prisma.$transaction(async (tx) => {
+    await lockCourtDayRow(tx, courtDayId);
     const courtDay = await tx.courtDay.findUniqueOrThrow({ where: { id: courtDayId } });
 
-    if (courtDay.status !== CourtDayStatus.SETUP) {
-      throw new Error(`Cannot start live: court day is ${courtDay.status}, expected SETUP`);
+    if (courtDay.status !== CourtDayStatus.SCHEDULED) {
+      throw new Error(`Cannot start live: court day is ${courtDay.status}, expected SCHEDULED`);
     }
 
     const now = new Date();
@@ -100,26 +99,25 @@ export async function startLive(
       where: { id: courtDayId },
       data: {
         status: CourtDayStatus.LIVE,
-        wentLiveAt: now,
-        publicNote: input.publicNote ?? courtDay.publicNote,
+        sessionStatus: CourtSessionStatus.LIVE,
+        sessionMessage: input.sessionMessage ?? null,
+        startedAt: now,
       },
     });
-
-    const seq = await nextSequence(tx, courtDayId);
+    const version = await nextStreamVersion(tx, courtDayId);
 
     const update = await tx.courtDayUpdate.create({
       data: {
         courtDayId,
-        sequence: seq,
         eventType: CourtDayEventType.LIVE_STARTED,
-        previousStatus: courtDay.status as any,
-        newStatus: CourtDayStatus.LIVE as any,
-        publicNote: input.publicNote ?? null,
-        updatedById: actor.userId ?? null,
+        actorUserId: actor.userId,
+        actorDisplayName: actor.displayName,
+        actorRole: actor.role,
+        payloadJson: { sessionMessage: input.sessionMessage ?? null },
       },
     });
 
-    return { courtDay: updated, update, seq };
+    return { courtDay: updated, update, version };
   });
 
   const envelope = buildEnvelope({
@@ -128,13 +126,14 @@ export async function startLive(
     aggregateType: 'courtday',
     aggregateId: courtDayId,
     courtDayId,
-    occurredAt: result.update.timestamp,
-    sequence: result.seq,
+    occurredAt: result.update.createdAt,
     actor,
-    payload: { publicNote: input.publicNote ?? null },
+    version: result.version,
+    payload: { sessionMessage: input.sessionMessage ?? null },
   });
 
   publish(envelope);
+  await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
 
@@ -144,6 +143,7 @@ export async function judgeRose(
   actor: ActorContext,
 ): Promise<{ courtDay: CourtDay; envelope: CourtCallEventEnvelope }> {
   const result = await prisma.$transaction(async (tx) => {
+    await lockCourtDayRow(tx, courtDayId);
     const courtDay = await tx.courtDay.findUniqueOrThrow({ where: { id: courtDayId } });
 
     if (courtDay.status !== CourtDayStatus.LIVE) {
@@ -154,28 +154,31 @@ export async function judgeRose(
     const updated = await tx.courtDay.update({
       where: { id: courtDayId },
       data: {
-        status: CourtDayStatus.JUDGE_ROSE,
-        judgeRoseAt: now,
-        resumesAt: input.resumesAt ? new Date(input.resumesAt) : null,
-        publicNote: input.publicNote ?? courtDay.publicNote,
+        sessionStatus: input.sessionStatus,
+        sessionMessage: input.message ?? null,
+        roseAt: now,
+        expectedResumeAt: input.expectedResumeAt ? new Date(input.expectedResumeAt) : null,
+        resumedAt: null, // clear any previous resume timestamp
       },
     });
-
-    const seq = await nextSequence(tx, courtDayId);
+    const version = await nextStreamVersion(tx, courtDayId);
 
     const update = await tx.courtDayUpdate.create({
       data: {
         courtDayId,
-        sequence: seq,
         eventType: CourtDayEventType.JUDGE_ROSE,
-        previousStatus: courtDay.status as any,
-        newStatus: CourtDayStatus.JUDGE_ROSE as any,
-        publicNote: input.publicNote ?? null,
-        updatedById: actor.userId ?? null,
+        actorUserId: actor.userId,
+        actorDisplayName: actor.displayName,
+        actorRole: actor.role,
+        payloadJson: {
+          sessionStatus: input.sessionStatus,
+          message: input.message ?? null,
+          expectedResumeAt: input.expectedResumeAt ?? null,
+        },
       },
     });
 
-    return { courtDay: updated, update, seq };
+    return { courtDay: updated, update, version };
   });
 
   const envelope = buildEnvelope({
@@ -184,75 +187,18 @@ export async function judgeRose(
     aggregateType: 'courtday',
     aggregateId: courtDayId,
     courtDayId,
-    occurredAt: result.update.timestamp,
-    sequence: result.seq,
+    occurredAt: result.update.createdAt,
     actor,
+    version: result.version,
     payload: {
-      resumesAt: input.resumesAt ?? null,
-      publicNote: input.publicNote ?? null,
+      sessionStatus: input.sessionStatus,
+      message: input.message ?? null,
+      expectedResumeAt: input.expectedResumeAt ?? null,
     },
   });
 
   publish(envelope);
-  bridgeCourtRose(courtDayId, actor);
-  return { courtDay: result.courtDay, envelope };
-}
-
-export async function atLunch(
-  courtDayId: string,
-  input: AtLunchInput,
-  actor: ActorContext,
-): Promise<{ courtDay: CourtDay; envelope: CourtCallEventEnvelope }> {
-  const result = await prisma.$transaction(async (tx) => {
-    const courtDay = await tx.courtDay.findUniqueOrThrow({ where: { id: courtDayId } });
-
-    if (courtDay.status !== CourtDayStatus.LIVE) {
-      throw new Error(`Cannot go to lunch: court day is ${courtDay.status}, expected LIVE`);
-    }
-
-    const updated = await tx.courtDay.update({
-      where: { id: courtDayId },
-      data: {
-        status: CourtDayStatus.AT_LUNCH,
-        resumesAt: input.resumesAt ? new Date(input.resumesAt) : null,
-        publicNote: input.publicNote ?? courtDay.publicNote,
-      },
-    });
-
-    const seq = await nextSequence(tx, courtDayId);
-
-    const update = await tx.courtDayUpdate.create({
-      data: {
-        courtDayId,
-        sequence: seq,
-        eventType: CourtDayEventType.AT_LUNCH,
-        previousStatus: courtDay.status as any,
-        newStatus: CourtDayStatus.AT_LUNCH as any,
-        publicNote: input.publicNote ?? null,
-        updatedById: actor.userId ?? null,
-      },
-    });
-
-    return { courtDay: updated, update, seq };
-  });
-
-  const envelope = buildEnvelope({
-    eventId: result.update.id,
-    eventType: CourtDayEventType.AT_LUNCH,
-    aggregateType: 'courtday',
-    aggregateId: courtDayId,
-    courtDayId,
-    occurredAt: result.update.timestamp,
-    sequence: result.seq,
-    actor,
-    payload: {
-      resumesAt: input.resumesAt ?? null,
-      publicNote: input.publicNote ?? null,
-    },
-  });
-
-  publish(envelope);
-  bridgeCourtRose(courtDayId, actor);
+  await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
 
@@ -262,36 +208,39 @@ export async function resume(
   actor: ActorContext,
 ): Promise<{ courtDay: CourtDay; envelope: CourtCallEventEnvelope }> {
   const result = await prisma.$transaction(async (tx) => {
+    await lockCourtDayRow(tx, courtDayId);
     const courtDay = await tx.courtDay.findUniqueOrThrow({ where: { id: courtDayId } });
 
-    const pausedStatuses: string[] = [CourtDayStatus.JUDGE_ROSE, CourtDayStatus.AT_LUNCH, CourtDayStatus.PAUSED];
-    if (!pausedStatuses.includes(courtDay.status)) {
-      throw new Error(`Cannot resume: court day is ${courtDay.status}, expected JUDGE_ROSE/AT_LUNCH/PAUSED`);
+    if (courtDay.status !== CourtDayStatus.LIVE) {
+      throw new Error(`Cannot resume: court day is ${courtDay.status}, expected LIVE`);
+    }
+    if (courtDay.sessionStatus === CourtSessionStatus.LIVE) {
+      throw new Error('Court day session is already LIVE');
     }
 
+    const now = new Date();
     const updated = await tx.courtDay.update({
       where: { id: courtDayId },
       data: {
-        status: CourtDayStatus.LIVE,
-        publicNote: input.publicNote ?? courtDay.publicNote,
+        sessionStatus: CourtSessionStatus.LIVE,
+        sessionMessage: input.sessionMessage ?? null,
+        resumedAt: now,
       },
     });
-
-    const seq = await nextSequence(tx, courtDayId);
+    const version = await nextStreamVersion(tx, courtDayId);
 
     const update = await tx.courtDayUpdate.create({
       data: {
         courtDayId,
-        sequence: seq,
         eventType: CourtDayEventType.RESUMED,
-        previousStatus: courtDay.status as any,
-        newStatus: CourtDayStatus.LIVE as any,
-        publicNote: input.publicNote ?? null,
-        updatedById: actor.userId ?? null,
+        actorUserId: actor.userId,
+        actorDisplayName: actor.displayName,
+        actorRole: actor.role,
+        payloadJson: { sessionMessage: input.sessionMessage ?? null },
       },
     });
 
-    return { courtDay: updated, update, seq };
+    return { courtDay: updated, update, version };
   });
 
   const envelope = buildEnvelope({
@@ -300,68 +249,69 @@ export async function resume(
     aggregateType: 'courtday',
     aggregateId: courtDayId,
     courtDayId,
-    occurredAt: result.update.timestamp,
-    sequence: result.seq,
+    occurredAt: result.update.createdAt,
     actor,
-    payload: { publicNote: input.publicNote ?? null },
+    version: result.version,
+    payload: { sessionMessage: input.sessionMessage ?? null },
   });
 
   publish(envelope);
-  bridgeCourtResumed(courtDayId, actor);
+  await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
 
-export async function concludeCourtDay(
+export async function closeCourtDay(
   courtDayId: string,
-  input: ConcludeCourtDayInput,
+  input: CloseCourtDayInput,
   actor: ActorContext,
 ): Promise<{ courtDay: CourtDay; envelope: CourtCallEventEnvelope }> {
   const result = await prisma.$transaction(async (tx) => {
+    await lockCourtDayRow(tx, courtDayId);
     const courtDay = await tx.courtDay.findUniqueOrThrow({ where: { id: courtDayId } });
 
-    if (courtDay.status === CourtDayStatus.CONCLUDED) {
-      throw new Error('Court day is already concluded');
+    if (courtDay.status === CourtDayStatus.CLOSED) {
+      throw new Error('Court day is already closed');
     }
 
     const now = new Date();
     const updated = await tx.courtDay.update({
       where: { id: courtDayId },
       data: {
-        status: CourtDayStatus.CONCLUDED,
-        concludedAt: now,
-        publicNote: input.publicNote ?? courtDay.publicNote,
+        status: CourtDayStatus.CLOSED,
+        sessionStatus: CourtSessionStatus.FINISHED,
+        sessionMessage: input.sessionMessage ?? null,
+        endedAt: now,
       },
     });
-
-    const seq = await nextSequence(tx, courtDayId);
+    const version = await nextStreamVersion(tx, courtDayId);
 
     const update = await tx.courtDayUpdate.create({
       data: {
         courtDayId,
-        sequence: seq,
-        eventType: CourtDayEventType.CONCLUDED,
-        previousStatus: courtDay.status as any,
-        newStatus: CourtDayStatus.CONCLUDED as any,
-        publicNote: input.publicNote ?? null,
-        updatedById: actor.userId ?? null,
+        eventType: CourtDayEventType.CLOSED,
+        actorUserId: actor.userId,
+        actorDisplayName: actor.displayName,
+        actorRole: actor.role,
+        payloadJson: { sessionMessage: input.sessionMessage ?? null },
       },
     });
 
-    return { courtDay: updated, update, seq };
+    return { courtDay: updated, update, version };
   });
 
   const envelope = buildEnvelope({
     eventId: result.update.id,
-    eventType: CourtDayEventType.CONCLUDED,
+    eventType: CourtDayEventType.CLOSED,
     aggregateType: 'courtday',
     aggregateId: courtDayId,
     courtDayId,
-    occurredAt: result.update.timestamp,
-    sequence: result.seq,
+    occurredAt: result.update.createdAt,
     actor,
-    payload: { publicNote: input.publicNote ?? null },
+    version: result.version,
+    payload: { sessionMessage: input.sessionMessage ?? null },
   });
 
   publish(envelope);
+  await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }

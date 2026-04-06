@@ -5,34 +5,41 @@
  * doesn't depend on generated client types for business logic.
  */
 
-// ─── User ───────────────────────────────────────────────────────────────────
+// ─── Court ───────────────────────────────────────────────────────────────────
 
-export const UserRole = {
-  REGISTRAR: 'REGISTRAR',
-  COUNSEL: 'COUNSEL',
-  ADMIN: 'ADMIN',
+export const CourtLevel = {
+  SUPREME: 'SUPREME',
+  DISTRICT: 'DISTRICT',
+  COUNTY: 'COUNTY',
+  FAMILY: 'FAMILY',
+  FEDERAL: 'FEDERAL',
+  MAGISTRATES: 'MAGISTRATES',
+  TRIBUNAL: 'TRIBUNAL',
+  OTHER: 'OTHER',
 } as const;
-export type UserRole = (typeof UserRole)[keyof typeof UserRole];
+export type CourtLevel = (typeof CourtLevel)[keyof typeof CourtLevel];
 
-// ─── CourtDay ───────────────────────────────────────────────────────────────
+// ─── CourtDay ────────────────────────────────────────────────────────────────
 
 export const CourtDayStatus = {
-  SETUP: 'SETUP',
+  SCHEDULED: 'SCHEDULED',
   LIVE: 'LIVE',
-  JUDGE_ROSE: 'JUDGE_ROSE',
-  AT_LUNCH: 'AT_LUNCH',
-  PAUSED: 'PAUSED',
-  CONCLUDED: 'CONCLUDED',
+  ADJOURNED: 'ADJOURNED',
+  CLOSED: 'CLOSED',
 } as const;
 export type CourtDayStatus = (typeof CourtDayStatus)[keyof typeof CourtDayStatus];
 
-export const SessionPeriod = {
-  MORNING: 'MORNING',
-  AFTERNOON: 'AFTERNOON',
+export const CourtSessionStatus = {
+  BEFORE_SITTING: 'BEFORE_SITTING',
+  LIVE: 'LIVE',
+  JUDGE_RISING_SHORT: 'JUDGE_RISING_SHORT',
+  AT_LUNCH: 'AT_LUNCH',
+  ADJOURNED_PART_HEARD: 'ADJOURNED_PART_HEARD',
+  FINISHED: 'FINISHED',
 } as const;
-export type SessionPeriod = (typeof SessionPeriod)[keyof typeof SessionPeriod];
+export type CourtSessionStatus = (typeof CourtSessionStatus)[keyof typeof CourtSessionStatus];
 
-// ─── ListItem ───────────────────────────────────────────────────────────────
+// ─── ListItem ────────────────────────────────────────────────────────────────
 
 export const ListItemStatus = {
   WAITING: 'WAITING',
@@ -45,52 +52,11 @@ export const ListItemStatus = {
   PART_HEARD: 'PART_HEARD',
   CONCLUDED: 'CONCLUDED',
   SETTLED: 'SETTLED',
-  STRUCK_OUT: 'STRUCK_OUT',
   REMOVED: 'REMOVED',
 } as const;
 export type ListItemStatus = (typeof ListItemStatus)[keyof typeof ListItemStatus];
 
-// ─── Direction / Outcome ────────────────────────────────────────────────────
-
-export const DirectionCode = {
-  MENTION: 'MENTION',
-  FOR_HEARING: 'FOR_HEARING',
-  CONSENT: 'CONSENT',
-  PART_HEARD: 'PART_HEARD',
-  LIBERTY_TO_REENTER: 'LIBERTY_TO_REENTER',
-  COSTS_RESERVED: 'COSTS_RESERVED',
-  NO_ORDER: 'NO_ORDER',
-  REPLYING_PAPERS: 'REPLYING_PAPERS',
-  INTERPRETER_REQUIRED: 'INTERPRETER_REQUIRED',
-  COUNSEL_TO_ATTEND: 'COUNSEL_TO_ATTEND',
-  OTHER: 'OTHER',
-} as const;
-export type DirectionCode = (typeof DirectionCode)[keyof typeof DirectionCode];
-
-export const OutcomeCode = {
-  CONCLUDED: 'CONCLUDED',
-  ADJOURNED_SAME_DAY: 'ADJOURNED_SAME_DAY',
-  ADJOURNED_NEXT_TERM: 'ADJOURNED_NEXT_TERM',
-  ADJOURNED_DATE_FIXED: 'ADJOURNED_DATE_FIXED',
-  ADJOURNED_DATE_TO_BE_FIXED: 'ADJOURNED_DATE_TO_BE_FIXED',
-  PART_HEARD: 'PART_HEARD',
-  SETTLED: 'SETTLED',
-  STRUCK_OUT: 'STRUCK_OUT',
-  LIBERTY_TO_REENTER: 'LIBERTY_TO_REENTER',
-  REMOVED: 'REMOVED',
-} as const;
-export type OutcomeCode = (typeof OutcomeCode)[keyof typeof OutcomeCode];
-
-export const AdjournmentType = {
-  SAME_DAY: 'SAME_DAY',
-  NEXT_TERM: 'NEXT_TERM',
-  DATE_FIXED: 'DATE_FIXED',
-  DATE_TO_BE_FIXED: 'DATE_TO_BE_FIXED',
-  GENERAL: 'GENERAL',
-} as const;
-export type AdjournmentType = (typeof AdjournmentType)[keyof typeof AdjournmentType];
-
-// ─── Actor (domain-level, not a Prisma enum) ───────────────────────────────
+// ─── Actor ───────────────────────────────────────────────────────────────────
 
 export const ActorRole = {
   REGISTRAR: 'REGISTRAR',
