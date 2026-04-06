@@ -250,7 +250,7 @@ export function RegistrarScreen() {
         {([
           ['live', 'Live'],
           ['list', 'List'],
-          ['stood', `Stood (${stoodCount})`],
+          ['stood', `Let Stand (${stoodCount})`],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -303,7 +303,7 @@ export function RegistrarScreen() {
                 <Chip label="+5" onClick={() => act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 5 })} />
                 <Chip label="+10" onClick={() => act(activeCase.id, 'set_duration', { minutes: (activeCase.estimatedMinutes ?? 0) + 10 })} />
                 <Chip label="Done" onClick={() => act(activeCase.id, 'done')} variant="active" />
-                <Chip label="Stand" onClick={() => act(activeCase.id, 'stood_down')} variant="warning" />
+                <Chip label="Let Stand" onClick={() => act(activeCase.id, 'stood_down')} variant="warning" />
                 <Chip label="Adjourn" onClick={() => { setSheetCaseId(activeCase.id); setActiveSheet('adjourn'); }} variant="danger" />
               </>
             )}
@@ -471,9 +471,9 @@ export function RegistrarScreen() {
       {/* ===== STOOD VIEW ===== */}
       {view === 'stood' && (
         <div className="flex-1 overflow-y-auto px-4 py-3">
-          <p className="text-xs text-court-text-dim font-semibold uppercase tracking-widest mb-3">Stood Down / Let Stand</p>
+          <p className="text-xs text-court-text-dim font-semibold uppercase tracking-widest mb-3">Let Stand</p>
           {fullList.filter(i => i.status === 'stood_down').length === 0 ? (
-            <p className="text-court-text-dim text-sm py-4 text-center">None stood down</p>
+            <p className="text-court-text-dim text-sm py-4 text-center">None let stand</p>
           ) : (
             <div className="space-y-1">
               {fullList.filter(i => i.status === 'stood_down').map((item) => (
@@ -555,7 +555,7 @@ function RowActions({
         {item.status === 'pending' && <Chip label="Calling" onClick={() => tap('calling')} variant="warning" />}
         {(item.status === 'pending' || item.status === 'calling') && <Chip label="Hear Now" onClick={() => tap('hearing')} variant="active" />}
         {!isCurrent && item.status !== 'concluded' && <Chip label="Done" onClick={() => tap('done')} />}
-        <Chip label="Stand" onClick={() => tap('stood_down')} />
+        <Chip label="Let Stand" onClick={() => tap('stood_down')} />
         <Chip label="Adjourn" onClick={() => tap('adjourn')} variant="danger" />
         <Chip label="Not Before" onClick={() => tap('not_before')} />
         <Chip label="Note" onClick={onNote} />

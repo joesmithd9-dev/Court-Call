@@ -156,7 +156,7 @@ export function JudgeScreen() {
         {([
           ['current', 'Current'],
           ['short', 'Short / Type'],
-          ['stood', `Stood (${stoodDownItems.length})`],
+          ['stood', `Let Stand (${stoodDownItems.length})`],
           ['list', 'Full List'],
         ] as const).map(([key, label]) => (
           <button
@@ -311,14 +311,14 @@ function ShortAndTypeView({
   );
 }
 
-// ---- Stood Down / Let Stand ----
+// ---- Let Stand ----
 
 function StoodDownView({ items }: { items: QueueItemView[] }) {
   return (
     <div className="px-6 py-4">
-      <p className="text-xs text-court-text-dim font-bold uppercase tracking-widest mb-3">Stood Down / Let Stand</p>
+      <p className="text-xs text-court-text-dim font-bold uppercase tracking-widest mb-3">Let Stand</p>
       {items.length === 0 ? (
-        <p className="text-court-text-dim text-sm py-4 text-center">None stood down</p>
+        <p className="text-court-text-dim text-sm py-4 text-center">None let stand</p>
       ) : (
         <div className="space-y-1">
           {items.map((item) => (
