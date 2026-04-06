@@ -18,6 +18,18 @@ export type CourtDayStatus =
   | 'adjourned'
   | 'ended';
 
+// ---- Matter types ----
+export type MatterType =
+  | 'mention'
+  | 'bail'
+  | 'hearing'
+  | 'consent'
+  | 'directions'
+  | 'sentence'
+  | 'application'
+  | 'review'
+  | 'other';
+
 // ---- Domain models ----
 export interface CourtCase {
   id: string;
@@ -27,6 +39,7 @@ export interface CourtCase {
   caseTitleFull: string;      // 6.5: full party names (registrar only)
   caseTitlePublic: string;    // 6.5: privacy-safe title (public view)
   caseNumber?: string;
+  matterType?: MatterType;    // e.g. mention, bail, hearing, consent
   status: CaseStatus;
   scheduledTime?: string;
   startedAt?: string;
