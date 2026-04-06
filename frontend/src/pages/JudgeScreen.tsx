@@ -35,7 +35,9 @@ export function JudgeScreen() {
     );
   }
 
-  const { meta, courtStatus, activeCase, fullList, timeBands, matterTypeGroups } = vm;
+  const { meta, courtStatus, activeCase, fullList, timeBands, matterTypeGroups, getGapFillerMatters } = vm;
+  const [gapMinutes, setGapMinutes] = useState<number | null>(null);
+  const gapResults = gapMinutes != null ? getGapFillerMatters(gapMinutes) : null;
 
   // Derived data
   const stoodDownItems = fullList.filter(i => i.status === 'stood_down');
@@ -151,6 +153,27 @@ export function JudgeScreen() {
         </div>
       )}
 
+      {/* Gap filler bar */}
+      <div className="px-6 py-2 bg-court-surface-2 border-b border-court-border flex items-center gap-2">
+        <span className="text-[10px] text-court-text-dim font-semibold uppercase tracking-widest shrink-0">Gap?</span>
+        {[5, 10, 15, 20, 30].map((m) => (
+          <button
+            key={m}
+            onClick={() => setGapMinutes(gapMinutes === m ? null : m)}
+            className={`px-2 py-1 rounded text-[10px] font-semibold ${
+              gapMinutes === m ? 'bg-court-warning/20 text-court-warning' : 'bg-court-surface text-court-text-dim hover:text-white'
+            }`}
+          >
+            {m}m
+          </button>
+        ))}
+        {gapMinutes != null && (
+          <button onClick={() => setGapMinutes(null)} className="ml-auto text-[10px] text-court-text-dim hover:text-white">
+            Clear ({gapResults?.length ?? 0})
+          </button>
+        )}
+      </div>
+
       {/* View tabs */}
       <div className="flex border-b border-court-border">
         {([
@@ -173,17 +196,37 @@ export function JudgeScreen() {
 
       {/* View content */}
       <div className="flex-1 overflow-y-auto">
-        {view === 'current' && (
-          <CurrentView activeCase={activeCase ? fullList.find(i => i.id === activeCase.id) : undefined} nextItems={nextItems} />
-        )}
-        {view === 'short' && (
-          <ShortAndTypeView timeBands={timeBands} matterTypeGroups={matterTypeGroups} activeCase={activeCase} />
-        )}
-        {view === 'stood' && (
-          <StoodDownView items={stoodDownItems} />
-        )}
-        {view === 'list' && (
-          <FullListView items={fullList} activeCaseId={activeCase?.id} />
+        {/* Gap filler results override tab content when active */}
+        {gapResults ? (
+          <div className="px-6 py-4">
+            <h3 className="text-xs text-court-warning font-semibold uppercase tracking-widest mb-3">
+              Fits in {gapMinutes}m — {gapResults.length} matter{gapResults.length !== 1 ? 's' : ''}
+            </h3>
+            {gapResults.length === 0 ? (
+              <p className="text-court-text-dim text-sm py-4 text-center">Nothing fits</p>
+            ) : (
+              <div className="space-y-1">
+                {gapResults.map((item, i) => (
+                  <JudgeRow key={item.id} item={item} index={i + 1} highlight={activeCase?.id === item.id} />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            {view === 'current' && (
+              <CurrentView activeCase={activeCase ? fullList.find(i => i.id === activeCase.id) : undefined} nextItems={nextItems} />
+            )}
+            {view === 'short' && (
+              <ShortAndTypeView timeBands={timeBands} matterTypeGroups={matterTypeGroups} activeCase={activeCase} />
+            )}
+            {view === 'stood' && (
+              <StoodDownView items={stoodDownItems} />
+            )}
+            {view === 'list' && (
+              <FullListView items={fullList} activeCaseId={activeCase?.id} />
+            )}
+          </>
         )}
       </div>
 
