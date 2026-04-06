@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { PublicLiveList } from './pages/PublicLiveList';
 import { RegistrarScreen } from './pages/RegistrarScreen';
+import { JudgeScreen } from './pages/JudgeScreen';
 
 export default function App() {
   return (
@@ -8,6 +9,7 @@ export default function App() {
       <Routes>
         <Route path="/public/:courtDayId" element={<PublicLiveList />} />
         <Route path="/registrar/:courtDayId" element={<RegistrarScreen />} />
+        <Route path="/judge/:courtDayId" element={<JudgeScreen />} />
         <Route path="*" element={<FallbackHome />} />
       </Routes>
     </BrowserRouter>
