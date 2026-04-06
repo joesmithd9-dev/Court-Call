@@ -1,28 +1,71 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type { SSEEvent } from '../types';
-import { adaptSSEEnvelope } from '../api/backendAdapter';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
-
-/**
- * Known named event types from the original Fastify backend.
- * We register explicit listeners for these so they aren't silently dropped.
- */
-const NAMED_EVENT_TYPES = [
-  'connected',
-  'COURT_DAY_STARTED', 'COURT_DAY_CLOSED', 'SESSION_RESUMED', 'JUDGE_ROSE',
-  'ITEM_CREATED', 'ITEM_CALLED', 'ITEM_STARTED', 'ITEM_COMPLETED',
-  'ITEM_ADJOURNED', 'ITEM_LET_STAND', 'ITEM_STOOD_DOWN', 'ITEM_RESTORED',
-  'ITEM_NOT_BEFORE_SET', 'ITEM_ESTIMATE_CHANGED', 'ITEM_NOTE_UPDATED',
-  'ITEM_REORDERED', 'ITEM_REMOVED', 'ITEM_DIRECTION_SET', 'ITEM_OUTCOME_SET',
-];
 
 interface UseSSEOptions {
   url: string;
   onEvent: (event: SSEEvent) => void;
   onReconnect: () => Promise<void> | void;
   enabled?: boolean;
+}
+
+const NAMED_BACKEND_EVENTS = [
+  'courtday.created',
+  'courtday.live_started',
+  'courtday.judge_rose',
+  'courtday.resumed',
+  'courtday.closed',
+  'courtday.projections_recomputed',
+  'courtday.list_resequenced',
+  'listitem.created',
+  'listitem.called',
+  'listitem.started',
+  'listitem.estimate_extended',
+  'listitem.not_before_set',
+  'listitem.adjourned',
+  'listitem.let_stand',
+  'listitem.stood_down',
+  'listitem.restored',
+  'listitem.direction_recorded',
+  'listitem.note_updated',
+  'listitem.outcome_recorded',
+  'listitem.completed',
+  'listitem.reordered',
+  'listitem.removed',
+  'listitem.undo_applied',
+] as const;
+
+function normaliseIncomingEvent(raw: unknown): SSEEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+
+  if (
+    typeof record.sequence === 'number' &&
+    typeof record.type === 'string' &&
+    typeof record.timestamp === 'string'
+  ) {
+    return {
+      id: String(record.id ?? crypto.randomUUID()),
+      sequence: record.sequence,
+      type: record.type as SSEEvent['type'],
+      data: (record.data as SSEEvent['data']) ?? {},
+      timestamp: record.timestamp,
+    };
+  }
+
+  if (typeof record.version === 'number') {
+    return {
+      id: (record.eventId as string) ?? crypto.randomUUID(),
+      sequence: record.version,
+      type: 'court_day_updated',
+      data: {},
+      timestamp: (record.occurredAt as string) ?? new Date().toISOString(),
+    };
+  }
+
+  return null;
 }
 
 export function useSSE({ url, onEvent, onReconnect, enabled = true }: UseSSEOptions) {
@@ -47,49 +90,20 @@ export function useSSE({ url, onEvent, onReconnect, enabled = true }: UseSSEOpti
       retryRef.current = 0;
     };
 
-    // Handle default 'message' events (Express backend sends these)
-    es.onmessage = (e) => {
+    const handleIncoming = (e: MessageEvent<string>) => {
       try {
-        const event: SSEEvent = JSON.parse(e.data);
-        onEventRef.current(event);
-      } catch {
-        // ignore malformed
-      }
-    };
-
-    // Handle named events from original Fastify backend
-    // These are sent as `event: ITEM_STARTED\ndata: {...}\n\n`
-    // EventSource only fires onmessage for events WITHOUT a name.
-    // Named events require explicit addEventListener.
-    const namedHandler = (e: MessageEvent) => {
-      if (e.type === 'connected') return; // skip connection ack
-
-      try {
-        const raw = JSON.parse(e.data);
-
-        // Original backend envelope: { eventId, eventType, courtDayId, version, payload }
-        if ('eventType' in raw && 'version' in raw) {
-          const adapted = adaptSSEEnvelope(raw);
-          // For named events, trigger a full refetch since we can't easily
-          // construct the full case object from the event payload alone.
-          // The onReconnect handler will fetch a fresh snapshot.
-          onEventRef.current({
-            ...adapted,
-            type: adapted.type as SSEEvent['type'],
-            data: {},
-          });
-          return;
+        const parsed = JSON.parse(e.data);
+        const event = normaliseIncomingEvent(parsed);
+        if (event) {
+          onEventRef.current(event);
         }
-
-        // Already in frontend shape
-        onEventRef.current(raw as SSEEvent);
       } catch {
-        // ignore malformed
+        // ignore malformed events
       }
     };
-
-    for (const eventType of NAMED_EVENT_TYPES) {
-      es.addEventListener(eventType, namedHandler as EventListener);
+    es.onmessage = handleIncoming;
+    for (const eventName of NAMED_BACKEND_EVENTS) {
+      es.addEventListener(eventName, handleIncoming as EventListener);
     }
 
     es.onerror = () => {
@@ -103,6 +117,7 @@ export function useSSE({ url, onEvent, onReconnect, enabled = true }: UseSSEOpti
       retryRef.current += 1;
 
       reconnectTimerRef.current = setTimeout(async () => {
+        // 6.2: Reconnect fetches fresh snapshot before reopening stream
         await onReconnectRef.current();
         connect();
       }, delay);

@@ -7,63 +7,196 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum CourtLevel {
+  SUPREME
+  DISTRICT
+  COUNTY
+  FAMILY
+  FEDERAL
+  MAGISTRATES
+  TRIBUNAL
+  OTHER
+}
+
+enum CourtDayStatus {
+  SCHEDULED
+  LIVE
+  ADJOURNED
+  CLOSED
+}
+
+enum CourtSessionStatus {
+  BEFORE_SITTING
+  LIVE
+  JUDGE_RISING_SHORT
+  AT_LUNCH
+  ADJOURNED_PART_HEARD
+  FINISHED
+}
+
+enum ListItemStatus {
+  WAITING
+  CALLING
+  HEARING
+  LET_STAND
+  NOT_BEFORE
+  STOOD_DOWN
+  ADJOURNED
+  PART_HEARD
+  CONCLUDED
+  SETTLED
+  REMOVED
+}
+
+enum ActorRole {
+  REGISTRAR
+  SYSTEM
+}
+
+// ─── Core Models ─────────────────────────────────────────────────────────────
+
+model Court {
+  id         String     @id @default(uuid()) @db.Uuid
+  name       String
+  courtLevel CourtLevel
+  location   String
+  room       String
+  isActive   Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  courtDays CourtDay[]
+
+  @@map("courts")
+}
+
 model CourtDay {
-  id             String   @id @default(uuid())
-  courtName      String
-  courtRoom      String?
-  judgeName      String
-  date           String
-  status         String   @default("scheduled")
-  statusMessage  String?
-  resumeTime     String?
-  currentCaseId  String?
-  lastSequence   Int      @default(0)
+  id                String             @id @default(uuid()) @db.Uuid
+  courtId           String             @db.Uuid
+  date              DateTime           @db.Date
+  judgeName         String
+  registrarName     String
+  streamVersion     Int                @default(0)
+  status            CourtDayStatus     @default(SCHEDULED)
+  sessionStatus     CourtSessionStatus @default(BEFORE_SITTING)
+  sessionMessage    String?
+  roseAt            DateTime?
+  expectedResumeAt  DateTime?
+  resumedAt         DateTime?
+  startedAt         DateTime?
+  endedAt           DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  court          Court            @relation(fields: [courtId], references: [id])
+  listItems      ListItem[]
+  courtDayUpdates CourtDayUpdate[]
+  listItemUpdates ListItemUpdate[]
+
+  @@unique([courtId, date])
+  @@index([courtId, date])
+  @@map("court_days")
+}
+
+model ListItem {
+  id                       String         @id @default(uuid()) @db.Uuid
+  courtDayId               String         @db.Uuid
+  queuePosition            Int
+  caseName                 String
+  caseReference            String
+  partiesShort             String?
+  status                   ListItemStatus @default(WAITING)
+  estimatedDurationMinutes Int?
+  predictedStartTime       DateTime?
+  predictedEndTime         DateTime?
+  actualStartTime          DateTime?
+  actualEndTime            DateTime?
+  calledAt                 DateTime?
+  notBeforeTime            DateTime?
+  adjournedUntil           DateTime?
+  stoodDownAt              DateTime?
+  restoredAt               DateTime?
+  directionCode            String?
+  outcomeCode              String?
+  publicNote               String?
+  internalNote             String?
+  isPriority               Boolean        @default(false)
+  isHiddenFromPublic       Boolean        @default(false)
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+
+  courtDay        CourtDay         @relation(fields: [courtDayId], references: [id])
+  listItemUpdates ListItemUpdate[]
+
+  @@index([courtDayId, queuePosition])
+  @@index([courtDayId, status])
+  @@unique([courtDayId, queuePosition])
+  @@map("list_items")
+}
+
+/// Idempotency store for command endpoints.
+model CommandIdempotency {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String
+  routeKey       String
+  idempotencyKey String
+  responseJson   Json?
+  completed      Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  cases  CourtCase[]
-  events CourtEvent[]
+  @@unique([scope, routeKey, idempotencyKey])
+  @@index([createdAt])
+  @@map("command_idempotency")
 }
 
-model CourtCase {
-  id                 String   @id @default(uuid())
-  courtDayId         String
-  position           Int
-  caseName           String   @default("")
-  caseTitleFull      String   @default("")
-  caseTitlePublic    String   @default("")
-  caseNumber         String?
-  matterType         String?
-  status             String   @default("pending")
-  scheduledTime      String?
-  startedAt          String?
-  estimatedMinutes   Int?
-  predictedStartTime String?
-  notBeforeTime      String?
-  adjournedToTime    String?
-  note               String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+/// Prevent duplicate undo application against the same event id.
+model UndoRecord {
+  targetEventId String   @id @db.Uuid
+  courtDayId    String   @db.Uuid
+  createdAt     DateTime @default(now())
+
+  @@index([courtDayId, createdAt])
+  @@map("undo_records")
+}
+
+/// Append-only audit/event record for court-wide events.
+model CourtDayUpdate {
+  id               String    @id @default(uuid()) @db.Uuid
+  courtDayId       String    @db.Uuid
+  eventType        String
+  actorUserId      String?
+  actorDisplayName String?
+  actorRole        ActorRole
+  payloadJson      Json      @default("{}")
+  createdAt        DateTime  @default(now())
 
   courtDay CourtDay @relation(fields: [courtDayId], references: [id])
 
-  @@unique([courtDayId, position])
+  @@index([courtDayId, createdAt])
+  @@map("court_day_updates")
 }
 
-model CourtEvent {
-  id                String   @id @default(uuid())
-  courtDayId        String
-  sequence          Int
-  type              String
-  data              String
-  actorRole         String   @default("system")
-  idempotencyKey    String?
-  undoneByEventId   String?
-  undoTargetEventId String?
-  createdAt         DateTime @default(now())
+/// Append-only audit/event record for list item events.
+model ListItemUpdate {
+  id               String    @id @default(uuid()) @db.Uuid
+  listItemId       String    @db.Uuid
+  courtDayId       String    @db.Uuid
+  eventType        String
+  actorUserId      String?
+  actorDisplayName String?
+  actorRole        ActorRole
+  previousStatus   String?
+  newStatus        String?
+  payloadJson      Json      @default("{}")
+  createdAt        DateTime  @default(now())
 
+  listItem ListItem @relation(fields: [listItemId], references: [id])
   courtDay CourtDay @relation(fields: [courtDayId], references: [id])
 
-  @@unique([courtDayId, sequence])
-  @@unique([courtDayId, idempotencyKey])
+  @@index([listItemId, createdAt])
+  @@index([courtDayId, createdAt])
+  @@map("list_item_updates")
 }

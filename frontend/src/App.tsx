@@ -25,7 +25,9 @@ function FallbackHome() {
         <code className="bg-court-surface-2 px-1.5 py-0.5 rounded text-sm">/public/:courtDayId</code>{' '}
         for the public live list or{' '}
         <code className="bg-court-surface-2 px-1.5 py-0.5 rounded text-sm">/registrar/:courtDayId</code>{' '}
-        for the registrar control screen.
+        for the registrar control screen, or{' '}
+        <code className="bg-court-surface-2 px-1.5 py-0.5 rounded text-sm">/judge/:courtDayId</code>{' '}
+        for the judge view.
       </p>
     </div>
   );

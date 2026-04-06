@@ -10,9 +10,6 @@ import {
   deriveFullList,
   deriveUndoState,
   deriveMeta,
-  deriveTimeBandGroups,
-  deriveMatterTypeGroups,
-  deriveGapFillerMatters,
 } from './courtDayViewModel';
 
 /**
@@ -44,12 +41,8 @@ export function useCourtDayView(view: ViewContext) {
       concluded: deriveConcluded(courtDay, view),
       fullList: deriveFullList(courtDay, view),
       undo: deriveUndoState(lastAction),
-      // Judge grouping projections
-      timeBands: deriveTimeBandGroups(courtDay, view),
-      matterTypeGroups: deriveMatterTypeGroups(courtDay, view),
-      getGapFillerMatters: (maxMinutes: number) => deriveGapFillerMatters(courtDay, view, maxMinutes),
       toast,
-      courtDay,
+      courtDay, // raw reference for action handlers that need IDs
     };
   }, [courtDay, connected, lastSequence, lastAction, criticalError, loading, error, toast, view]);
 }
