@@ -8,11 +8,20 @@ type SnapshotResult = Awaited<ReturnType<typeof getCourtDaySnapshot>> & { lastEv
 /**
  * Emit event: increment sequence, persist event, broadcast SSE, return snapshot.
  * All mutations go through this to guarantee sequencing + idempotency + audit.
+ *
+ * IMPORTANT: `sseData` is what gets broadcast to SSE clients and must match
+ * the frontend SSEEvent.data contract:
+ *   - court_day_updated: partial CourtDay fields
+ *   - case_updated: { case: CourtCase }
+ *   - case_reordered: { cases: CourtCase[] }
+ *   - case_added: { case: CourtCase }
+ *   - case_removed: { case: { id: string } }
  */
 async function emitEvent(
   courtDayId: string,
   type: string,
-  data: Record<string, unknown>,
+  auditData: Record<string, unknown>,
+  sseData: Record<string, unknown>,
   opts: { idempotencyKey?: string; actorRole?: string; undoTargetEventId?: string } = {}
 ): Promise<SnapshotResult> {
   // Idempotency check: if key already used, return current snapshot
@@ -39,25 +48,79 @@ async function emitEvent(
       courtDayId,
       sequence: cd.lastSequence,
       type,
-      data: JSON.stringify(data),
+      data: JSON.stringify(auditData),
       actorRole: opts.actorRole ?? 'registrar',
       idempotencyKey: opts.idempotencyKey ?? null,
       undoTargetEventId: opts.undoTargetEventId ?? null,
     },
   });
 
-  // Broadcast to SSE clients
+  // Broadcast to SSE clients — sseData matches frontend SSEEvent.data shape
   broadcastEvent(courtDayId, {
     id: event.id,
     sequence: event.sequence,
     type: event.type,
-    data,
+    data: sseData,
     timestamp: event.createdAt.toISOString(),
   });
 
   // Return authoritative snapshot + lastEventId
   const snapshot = await getCourtDaySnapshot(courtDayId);
   return { ...snapshot!, lastEventId: eventId };
+}
+
+/** Helper: fetch a case and format it for SSE/snapshot shape */
+async function fetchCaseForSSE(caseId: string) {
+  const c = await prisma.courtCase.findUnique({ where: { id: caseId } });
+  if (!c) return null;
+  return {
+    id: c.id,
+    courtDayId: c.courtDayId,
+    position: c.position,
+    caseName: c.caseName,
+    caseTitleFull: c.caseTitleFull,
+    caseTitlePublic: c.caseTitlePublic,
+    caseNumber: c.caseNumber,
+    matterType: c.matterType,
+    status: c.status,
+    scheduledTime: c.scheduledTime,
+    startedAt: c.startedAt,
+    estimatedMinutes: c.estimatedMinutes,
+    predictedStartTime: c.predictedStartTime,
+    notBeforeTime: c.notBeforeTime,
+    adjournedToTime: c.adjournedToTime,
+    note: c.note,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+  };
+}
+
+/** Helper: fetch all cases for a court day, formatted for SSE */
+async function fetchAllCasesForSSE(courtDayId: string) {
+  const cases = await prisma.courtCase.findMany({
+    where: { courtDayId },
+    orderBy: { position: 'asc' },
+  });
+  return cases.map(c => ({
+    id: c.id,
+    courtDayId: c.courtDayId,
+    position: c.position,
+    caseName: c.caseName,
+    caseTitleFull: c.caseTitleFull,
+    caseTitlePublic: c.caseTitlePublic,
+    caseNumber: c.caseNumber,
+    matterType: c.matterType,
+    status: c.status,
+    scheduledTime: c.scheduledTime,
+    startedAt: c.startedAt,
+    estimatedMinutes: c.estimatedMinutes,
+    predictedStartTime: c.predictedStartTime,
+    notBeforeTime: c.notBeforeTime,
+    adjournedToTime: c.adjournedToTime,
+    note: c.note,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+  }));
 }
 
 // ---- Court Day Commands ----
@@ -77,7 +140,14 @@ export async function updateCourtDayStatus(
     },
   });
 
-  return emitEvent(courtDayId, 'court_day_updated', payload, { idempotencyKey });
+  // court_day_updated SSE data: partial CourtDay fields (no nested case)
+  return emitEvent(
+    courtDayId,
+    'court_day_updated',
+    payload,       // audit log
+    payload,       // SSE: frontend expects partial CourtDay fields directly
+    { idempotencyKey }
+  );
 }
 
 // ---- Case Commands ----
@@ -123,7 +193,7 @@ export async function updateCase(
     });
   }
 
-  // If concluding current case, clear currentCaseId
+  // If concluding/adjourning/standing down current case, clear currentCaseId
   if (payload.status === 'concluded' || payload.status === 'adjourned' || payload.status === 'stood_down') {
     const cd = await prisma.courtDay.findUnique({ where: { id: courtDayId } });
     if (cd?.currentCaseId === caseId) {
@@ -134,7 +204,16 @@ export async function updateCase(
     }
   }
 
-  return emitEvent(courtDayId, 'case_updated', { caseId, ...payload }, { idempotencyKey });
+  // Fetch updated case for SSE — frontend expects { case: CourtCase }
+  const updatedCase = await fetchCaseForSSE(caseId);
+
+  return emitEvent(
+    courtDayId,
+    'case_updated',
+    { caseId, ...payload },                    // audit log (flat)
+    { case: updatedCase },                     // SSE: frontend expects nested case object
+    { idempotencyKey }
+  );
 }
 
 export async function startNextCase(
@@ -159,7 +238,6 @@ export async function startNextCase(
   });
 
   if (!next) {
-    // No next case — just return snapshot
     const snapshot = await getCourtDaySnapshot(courtDayId);
     return { ...snapshot!, lastEventId: '' };
   }
@@ -174,7 +252,15 @@ export async function startNextCase(
     data: { currentCaseId: next.id, status: 'live' },
   });
 
-  return emitEvent(courtDayId, 'case_updated', { caseId: next.id, status: 'hearing' }, { idempotencyKey });
+  const updatedCase = await fetchCaseForSSE(next.id);
+
+  return emitEvent(
+    courtDayId,
+    'case_updated',
+    { caseId: next.id, status: 'hearing' },    // audit log
+    { case: updatedCase },                     // SSE: frontend expects nested case object
+    { idempotencyKey }
+  );
 }
 
 export async function reorderCase(
@@ -200,20 +286,17 @@ export async function reorderCase(
   }
 
   // Reorder: shift others, then place the moved case
-  // Use a temp position to avoid unique constraint violations
   await prisma.courtCase.update({
     where: { id: moving.id },
     data: { position: maxPos + 1000 },
   });
 
   if (targetPos < oldPos) {
-    // Moving up: shift others down
     await prisma.$executeRawUnsafe(
       `UPDATE CourtCase SET position = position + 1 WHERE courtDayId = ? AND position >= ? AND position < ? AND id != ?`,
       courtDayId, targetPos, oldPos, moving.id
     );
   } else {
-    // Moving down: shift others up
     await prisma.$executeRawUnsafe(
       `UPDATE CourtCase SET position = position - 1 WHERE courtDayId = ? AND position > ? AND position <= ? AND id != ?`,
       courtDayId, oldPos, targetPos, moving.id
@@ -225,7 +308,16 @@ export async function reorderCase(
     data: { position: targetPos },
   });
 
-  return emitEvent(courtDayId, 'case_reordered', { caseId: payload.caseId, newPosition: targetPos }, { idempotencyKey });
+  // Fetch all cases for SSE — frontend expects { cases: CourtCase[] }
+  const allCases = await fetchAllCasesForSSE(courtDayId);
+
+  return emitEvent(
+    courtDayId,
+    'case_reordered',
+    { caseId: payload.caseId, newPosition: targetPos },  // audit log
+    { cases: allCases },                                   // SSE: frontend expects cases array
+    { idempotencyKey }
+  );
 }
 
 // ---- Undo ----
@@ -247,13 +339,10 @@ export async function undoEvent(
     throw new Error('Event already undone');
   }
 
-  // Parse the original event data to determine reversal
   const data = JSON.parse(target.data) as Record<string, unknown>;
   const caseId = data.caseId as string | undefined;
 
-  // Reverse the effect based on event type
   if (target.type === 'case_updated' && caseId) {
-    // Revert case to pending (safe default for undo)
     await prisma.courtCase.update({
       where: { id: caseId },
       data: {
@@ -264,7 +353,6 @@ export async function undoEvent(
       },
     });
 
-    // If this case was current, clear it
     const cd = await prisma.courtDay.findUnique({ where: { id: courtDayId } });
     if (cd?.currentCaseId === caseId) {
       await prisma.courtDay.update({
@@ -274,11 +362,13 @@ export async function undoEvent(
     }
   }
 
-  // Mark original event as undone
+  const revertedCase = caseId ? await fetchCaseForSSE(caseId) : null;
+
   const undoEventResult = await emitEvent(
     courtDayId,
     'case_updated',
-    { caseId, undoOf: targetEventId },
+    { caseId, undoOf: targetEventId },          // audit log
+    { case: revertedCase },                     // SSE: frontend expects nested case object
     { idempotencyKey, undoTargetEventId: targetEventId }
   );
 
