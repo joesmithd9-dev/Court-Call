@@ -4,10 +4,10 @@ import type {
   UpdateCourtDayPayload,
   ReorderPayload,
 } from '../types';
+import { adaptProjection, isCommandResult, getEventIdFromCommandResult } from './backendAdapter';
 
 const BASE = '/v1';
 
-// (C) Collision-free idempotency key using crypto.randomUUID
 function idempotencyKey(): string {
   return crypto.randomUUID();
 }
@@ -26,8 +26,37 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
-function mutate<T>(path: string, method: string, body?: unknown): Promise<T> {
-  return request<T>(path, {
+/**
+ * Fetch a snapshot and normalize it.
+ * Handles both backend shapes:
+ *   - Original Fastify: { banner, listItems, activeItem }
+ *   - Express compat: { status, cases, currentCaseId }
+ */
+async function fetchSnapshot(path: string): Promise<CourtDay> {
+  const raw = await request<Record<string, unknown>>(path);
+
+  // Detect original Fastify backend shape (has 'banner' and 'listItems')
+  if ('banner' in raw && 'listItems' in raw) {
+    return adaptProjection(raw as any);
+  }
+
+  // Already in frontend shape (Express backend or pre-adapted)
+  return raw as unknown as CourtDay;
+}
+
+/**
+ * Mutating request. Returns a snapshot.
+ * Handles both response shapes:
+ *   - Original Fastify: { success, eventId, eventType } → refetch snapshot
+ *   - Express compat: full CourtDay snapshot with lastEventId
+ */
+async function mutateAndSnapshot(
+  snapshotPath: string,
+  mutatePath: string,
+  method: string,
+  body?: unknown
+): Promise<CourtDay & { lastEventId?: string }> {
+  const raw = await request<Record<string, unknown>>(mutatePath, {
     method,
     body: body ? JSON.stringify(body) : undefined,
     headers: {
@@ -35,11 +64,26 @@ function mutate<T>(path: string, method: string, body?: unknown): Promise<T> {
       'Idempotency-Key': idempotencyKey(),
     },
   });
+
+  // Original Fastify backend returns { success, eventId, eventType }
+  if (isCommandResult(raw)) {
+    const snapshot = await fetchSnapshot(snapshotPath);
+    return { ...snapshot, lastEventId: getEventIdFromCommandResult(raw as any) };
+  }
+
+  // Express backend returns full snapshot with lastEventId
+  if ('banner' in raw && 'listItems' in raw) {
+    const adapted = adaptProjection(raw as any);
+    return { ...adapted, lastEventId: (raw as any).lastEventId };
+  }
+
+  return raw as unknown as CourtDay & { lastEventId?: string };
 }
 
 // ---- Public endpoints ----
+
 export function fetchCourtDay(courtDayId: string): Promise<CourtDay> {
-  return request(`/public/court-days/${courtDayId}`);
+  return fetchSnapshot(`/public/court-days/${courtDayId}`);
 }
 
 export function getSSEUrl(courtDayId: string): string {
@@ -47,15 +91,21 @@ export function getSSEUrl(courtDayId: string): string {
 }
 
 // ---- Registrar endpoints ----
+
 export function fetchRegistrarCourtDay(courtDayId: string): Promise<CourtDay> {
-  return request(`/registrar/court-days/${courtDayId}`);
+  return fetchSnapshot(`/registrar/court-days/${courtDayId}`);
 }
 
 export function updateCourtDay(
   courtDayId: string,
   payload: UpdateCourtDayPayload
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}`, 'PATCH', payload);
+  return mutateAndSnapshot(
+    `/registrar/court-days/${courtDayId}`,
+    `/registrar/court-days/${courtDayId}`,
+    'PATCH',
+    payload
+  );
 }
 
 export function updateCase(
@@ -63,24 +113,42 @@ export function updateCase(
   caseId: string,
   payload: UpdateCasePayload
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/cases/${caseId}`, 'PATCH', payload);
+  return mutateAndSnapshot(
+    `/registrar/court-days/${courtDayId}`,
+    `/registrar/court-days/${courtDayId}/cases/${caseId}`,
+    'PATCH',
+    payload
+  );
 }
 
 export function startNextCase(courtDayId: string): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/start-next`, 'POST');
+  return mutateAndSnapshot(
+    `/registrar/court-days/${courtDayId}`,
+    `/registrar/court-days/${courtDayId}/start-next`,
+    'POST'
+  );
 }
 
 export function reorderCase(
   courtDayId: string,
   payload: ReorderPayload
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/reorder`, 'POST', payload);
+  return mutateAndSnapshot(
+    `/registrar/court-days/${courtDayId}`,
+    `/registrar/court-days/${courtDayId}/reorder`,
+    'POST',
+    payload
+  );
 }
 
-// (B) Undo is event-based — sends targetEventId, backend emits compensating event
 export function undoAction(
   courtDayId: string,
   targetEventId: string
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/undo`, 'POST', { targetEventId });
+  return mutateAndSnapshot(
+    `/registrar/court-days/${courtDayId}`,
+    `/registrar/court-days/${courtDayId}/undo`,
+    'POST',
+    { targetEventId }
+  );
 }
