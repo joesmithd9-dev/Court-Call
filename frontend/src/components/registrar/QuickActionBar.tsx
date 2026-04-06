@@ -22,7 +22,6 @@ export function QuickActionBar({
   onLetStand,
   onUndo,
 }: Props) {
-  // 6.3: Undo countdown
   const [undoRemaining, setUndoRemaining] = useState(0);
 
   useEffect(() => {
@@ -56,7 +55,6 @@ export function QuickActionBar({
           <TapBtn label="Let Stand" onAction={onLetStand} variant="warning" />
         </>
       )}
-      {/* 6.3: Undo button — visible only when valid */}
       {undoValid && (
         <TapBtn
           label={`Undo (${Math.ceil(undoRemaining / 1000)}s)`}
@@ -68,7 +66,6 @@ export function QuickActionBar({
   );
 }
 
-// 6.4: Tap-protected button with immediate visual feedback
 function TapBtn({
   label,
   onAction,

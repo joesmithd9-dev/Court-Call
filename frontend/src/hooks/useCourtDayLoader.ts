@@ -10,10 +10,15 @@ interface Options {
 }
 
 export function useCourtDayLoader({ courtDayId, fetchFn }: Options) {
-  const { replaceSnapshot, setLoading, setError, setConnected, handleSSEEvent } =
-    useCourtDayStore();
+  const {
+    replaceSnapshot,
+    setLoading,
+    setError,
+    setConnected,
+    setEventsPaused,
+    handleSSEEvent,
+  } = useCourtDayStore();
 
-  // 6.2: Full snapshot replacement — never merge, always replace
   const loadSnapshot = useCallback(async () => {
     try {
       setLoading(true);
@@ -34,14 +39,19 @@ export function useCourtDayLoader({ courtDayId, fetchFn }: Options) {
       setConnected(true);
       handleSSEEvent(event);
     },
-    // 6.2: On reconnect, fetch fresh snapshot and replace entire store
+    // (A) On reconnect: pause events → fetch snapshot → replace → unpause
+    // This eliminates the race where an SSE event arrives between
+    // snapshot fetch and snapshot application, causing state reversion.
     onReconnect: async () => {
       setConnected(false);
+      setEventsPaused(true);
       try {
         const snapshot = await fetchFn(courtDayId);
         replaceSnapshot(snapshot);
       } catch {
         // snapshot fetch failed — will retry on next reconnect
+      } finally {
+        setEventsPaused(false);
       }
     },
   });

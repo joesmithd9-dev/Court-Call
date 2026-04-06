@@ -7,9 +7,9 @@ import type {
 
 const BASE = '/v1';
 
-// 6.4: Generate idempotency key
-function idempotencyKey(resource: string, action: string): string {
-  return `${resource}-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+// (C) Collision-free idempotency key using crypto.randomUUID
+function idempotencyKey(): string {
+  return crypto.randomUUID();
 }
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -26,14 +26,13 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// 6.4: Mutating request with idempotency header
-function mutate<T>(path: string, method: string, body?: unknown, idempKey?: string): Promise<T> {
+function mutate<T>(path: string, method: string, body?: unknown): Promise<T> {
   return request<T>(path, {
     method,
     body: body ? JSON.stringify(body) : undefined,
     headers: {
       'Content-Type': 'application/json',
-      ...(idempKey ? { 'Idempotency-Key': idempKey } : {}),
+      'Idempotency-Key': idempotencyKey(),
     },
   });
 }
@@ -56,8 +55,7 @@ export function updateCourtDay(
   courtDayId: string,
   payload: UpdateCourtDayPayload
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}`, 'PATCH', payload,
-    idempotencyKey(courtDayId, 'update-day'));
+  return mutate(`/registrar/court-days/${courtDayId}`, 'PATCH', payload);
 }
 
 export function updateCase(
@@ -65,31 +63,24 @@ export function updateCase(
   caseId: string,
   payload: UpdateCasePayload
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/cases/${caseId}`, 'PATCH', payload,
-    idempotencyKey(caseId, 'update-case'));
+  return mutate(`/registrar/court-days/${courtDayId}/cases/${caseId}`, 'PATCH', payload);
 }
 
 export function startNextCase(courtDayId: string): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/start-next`, 'POST', undefined,
-    idempotencyKey(courtDayId, 'start-next'));
+  return mutate(`/registrar/court-days/${courtDayId}/start-next`, 'POST');
 }
 
 export function reorderCase(
   courtDayId: string,
   payload: ReorderPayload
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/reorder`, 'POST', payload,
-    idempotencyKey(payload.caseId, 'reorder'));
+  return mutate(`/registrar/court-days/${courtDayId}/reorder`, 'POST', payload);
 }
 
-// 6.3: Undo endpoint
+// (B) Undo is event-based — sends targetEventId, backend emits compensating event
 export function undoAction(
   courtDayId: string,
-  actionType: string,
-  caseId: string,
-  previousPayload: unknown
+  targetEventId: string
 ): Promise<CourtDay> {
-  return mutate(`/registrar/court-days/${courtDayId}/undo`, 'POST',
-    { actionType, caseId, previousPayload },
-    idempotencyKey(caseId, 'undo'));
+  return mutate(`/registrar/court-days/${courtDayId}/undo`, 'POST', { targetEventId });
 }

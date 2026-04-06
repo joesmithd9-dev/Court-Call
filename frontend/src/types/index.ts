@@ -66,8 +66,8 @@ export type SSEEventType =
   | 'heartbeat';
 
 export interface SSEEvent {
-  id: string;                 // 6.1: unique event id
-  sequence: number;           // 6.1: monotonic per courtDay
+  id: string;                 // unique event id
+  sequence: number;           // monotonic per courtDay
   type: SSEEventType;
   data: Partial<CourtDay> & {
     case?: CourtCase;
@@ -97,10 +97,10 @@ export interface ReorderPayload {
   newPosition: number;
 }
 
-// ---- 6.3: Undo ----
+// ---- Undo: event-based, not payload-based ----
 export interface LastAction {
+  eventId: string;            // (B) The backend event ID to reverse
   actionType: string;
   caseId: string;
   timestamp: number;
-  previousPayload: UpdateCasePayload | UpdateCourtDayPayload;
 }

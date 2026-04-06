@@ -14,12 +14,13 @@ import {
   startNextCase,
   undoAction,
 } from '../api/client';
-import type { UpdateCasePayload } from '../types';
 import { CourtHeader } from '../components/common/CourtHeader';
 import { StatusBanner } from '../components/common/StatusBanner';
 import { CurrentCaseCard } from '../components/common/CurrentCaseCard';
 import { NextUpStrip } from '../components/common/NextUpStrip';
 import { ListItemRow } from '../components/common/ListItemRow';
+import { Toast } from '../components/common/Toast';
+import { CriticalErrorBanner } from '../components/common/CriticalErrorBanner';
 import { QuickActionBar } from '../components/registrar/QuickActionBar';
 import { GlobalControls } from '../components/registrar/GlobalControls';
 import { AdjournSheet } from '../components/registrar/AdjournSheet';
@@ -30,8 +31,19 @@ type SheetType = 'adjourn' | 'not_before' | null;
 
 export function RegistrarScreen() {
   const { courtDayId } = useParams<{ courtDayId: string }>();
-  const { courtDay, loading, error, connected, lastAction, replaceSnapshot, setLastAction, clearLastAction } =
-    useCourtDayStore();
+  const {
+    courtDay,
+    loading,
+    error,
+    connected,
+    lastAction,
+    criticalError,
+    toast,
+    replaceSnapshot,
+    setLastAction,
+    clearLastAction,
+    showToast,
+  } = useCourtDayStore();
 
   useCourtDayLoader({
     courtDayId: courtDayId!,
@@ -45,44 +57,54 @@ export function RegistrarScreen() {
 
   const id = courtDayId!;
 
-  // 6.3: Record action for undo
+  // (B) Record action for event-based undo.
+  // The API response includes the event ID of the action just performed.
+  // We store that so undo can target the exact event.
   const recordAction = useCallback(
-    (actionType: string, caseId: string, previousPayload: UpdateCasePayload) => {
+    (eventId: string, actionType: string, caseId: string) => {
       setLastAction({
+        eventId,
         actionType,
         caseId,
         timestamp: Date.now(),
-        previousPayload,
       });
     },
     [setLastAction]
   );
+
+  // Helper: extract eventId from API response snapshot.
+  // The backend's response snapshot includes lastSequence which corresponds
+  // to the event just created. We use the response to get the event reference.
+  // Convention: API responses include a `lastEventId` field for undo targeting.
+  const getEventId = (result: { lastEventId?: string; lastSequence?: number }): string => {
+    return (result as Record<string, unknown>).lastEventId as string ?? `seq-${(result as Record<string, unknown>).lastSequence ?? Date.now()}`;
+  };
 
   // ---- Current case actions ----
   const handleAddTime = useCallback(
     async (minutes: number) => {
       if (!courtDay?.currentCaseId) return;
       const c = courtDay.cases.find((c) => c.id === courtDay.currentCaseId);
-      const prevEst = c?.estimatedMinutes ?? 0;
-      const newEst = prevEst + minutes;
+      const newEst = (c?.estimatedMinutes ?? 0) + minutes;
       const result = await updateCase(id, courtDay.currentCaseId, {
         estimatedMinutes: newEst,
       });
-      recordAction('add_time', courtDay.currentCaseId, { estimatedMinutes: prevEst });
+      recordAction(getEventId(result), 'add_time', courtDay.currentCaseId);
       replaceSnapshot(result);
+      showToast(`+${minutes} min applied`);
     },
-    [courtDay, id, replaceSnapshot, recordAction]
+    [courtDay, id, replaceSnapshot, recordAction, showToast]
   );
 
   const handleDone = useCallback(async () => {
     if (!courtDay?.currentCaseId) return;
-    const c = courtDay.cases.find((c) => c.id === courtDay.currentCaseId);
     const result = await updateCase(id, courtDay.currentCaseId, {
       status: 'concluded',
     });
-    recordAction('done', courtDay.currentCaseId, { status: c?.status });
+    recordAction(getEventId(result), 'done', courtDay.currentCaseId);
     replaceSnapshot(result);
-  }, [courtDay, id, replaceSnapshot, recordAction]);
+    showToast('Case concluded');
+  }, [courtDay, id, replaceSnapshot, recordAction, showToast]);
 
   const handleAdjournCurrent = useCallback(() => {
     if (!courtDay?.currentCaseId) return;
@@ -92,91 +114,99 @@ export function RegistrarScreen() {
 
   const handleLetStand = useCallback(async () => {
     if (!courtDay?.currentCaseId) return;
-    const c = courtDay.cases.find((c) => c.id === courtDay.currentCaseId);
     const result = await updateCase(id, courtDay.currentCaseId, {
       status: 'stood_down',
     });
-    recordAction('let_stand', courtDay.currentCaseId, { status: c?.status });
+    recordAction(getEventId(result), 'let_stand', courtDay.currentCaseId);
     replaceSnapshot(result);
-  }, [courtDay, id, replaceSnapshot, recordAction]);
+    showToast('Case stood down');
+  }, [courtDay, id, replaceSnapshot, recordAction, showToast]);
 
-  // ---- 6.3: Undo ----
+  // (B) Undo — sends targetEventId to backend for compensating event
   const handleUndo = useCallback(async () => {
     if (!lastAction) return;
     if (Date.now() - lastAction.timestamp > 10_000) return;
-    const result = await undoAction(id, lastAction.actionType, lastAction.caseId, lastAction.previousPayload);
+    const result = await undoAction(id, lastAction.eventId);
     clearLastAction();
     replaceSnapshot(result);
-  }, [id, lastAction, clearLastAction, replaceSnapshot]);
+    showToast('Action undone');
+  }, [id, lastAction, clearLastAction, replaceSnapshot, showToast]);
 
   // ---- Sheet confirmations ----
   const handleAdjournConfirm = useCallback(
     async (time: string) => {
       if (!sheetCaseId) return;
-      const c = courtDay?.cases.find((c) => c.id === sheetCaseId);
       const result = await updateCase(id, sheetCaseId, {
         status: 'adjourned',
         adjournedToTime: time,
       });
-      recordAction('adjourn', sheetCaseId, { status: c?.status, adjournedToTime: c?.adjournedToTime });
+      recordAction(getEventId(result), 'adjourn', sheetCaseId);
       replaceSnapshot(result);
       setActiveSheet(null);
       setSheetCaseId(null);
+      const timeStr = new Date(time).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
+      showToast(`Adjourned to ${timeStr}`);
     },
-    [id, sheetCaseId, courtDay, replaceSnapshot, recordAction]
+    [id, sheetCaseId, replaceSnapshot, recordAction, showToast]
   );
 
   const handleNotBeforeConfirm = useCallback(
     async (time: string) => {
       if (!sheetCaseId) return;
-      const c = courtDay?.cases.find((c) => c.id === sheetCaseId);
       const result = await updateCase(id, sheetCaseId, {
         status: 'not_before',
         notBeforeTime: time,
       });
-      recordAction('not_before', sheetCaseId, { status: c?.status, notBeforeTime: c?.notBeforeTime });
+      recordAction(getEventId(result), 'not_before', sheetCaseId);
       replaceSnapshot(result);
       setActiveSheet(null);
       setSheetCaseId(null);
+      const timeStr = new Date(time).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', hour12: false });
+      showToast(`Not before ${timeStr}`);
     },
-    [id, sheetCaseId, courtDay, replaceSnapshot, recordAction]
+    [id, sheetCaseId, replaceSnapshot, recordAction, showToast]
   );
 
   // ---- Global controls ----
   const handleJudgeRose = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'judge_rose' });
     replaceSnapshot(result);
-  }, [id, replaceSnapshot]);
+    showToast('Judge rose');
+  }, [id, replaceSnapshot, showToast]);
 
   const handleResume = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'live' });
     replaceSnapshot(result);
-  }, [id, replaceSnapshot]);
+    showToast('Court resumed');
+  }, [id, replaceSnapshot, showToast]);
 
   const handleStartNext = useCallback(async () => {
     const result = await startNextCase(id);
     replaceSnapshot(result);
-  }, [id, replaceSnapshot]);
+    showToast('Next case started');
+  }, [id, replaceSnapshot, showToast]);
 
   const handleEndDay = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'ended' });
     replaceSnapshot(result);
-  }, [id, replaceSnapshot]);
+    showToast('Day ended');
+  }, [id, replaceSnapshot, showToast]);
 
   const handleAtLunch = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'at_lunch' });
     replaceSnapshot(result);
-  }, [id, replaceSnapshot]);
+    showToast('At lunch');
+  }, [id, replaceSnapshot, showToast]);
 
   // ---- Inline case actions ----
   const handleInlineCaseAction = useCallback(
     async (caseId: string, action: string) => {
-      const c = courtDay?.cases.find((c) => c.id === caseId);
       switch (action) {
         case 'done': {
           const result = await updateCase(id, caseId, { status: 'concluded' });
-          recordAction('done', caseId, { status: c?.status });
+          recordAction(getEventId(result), 'done', caseId);
           replaceSnapshot(result);
+          showToast('Case concluded');
           break;
         }
         case 'adjourn': {
@@ -191,8 +221,9 @@ export function RegistrarScreen() {
         }
         case 'let_stand': {
           const result = await updateCase(id, caseId, { status: 'stood_down' });
-          recordAction('let_stand', caseId, { status: c?.status });
+          recordAction(getEventId(result), 'let_stand', caseId);
           replaceSnapshot(result);
+          showToast('Case stood down');
           break;
         }
         case 'note': {
@@ -202,7 +233,7 @@ export function RegistrarScreen() {
       }
       setExpandedCaseId(null);
     },
-    [id, courtDay, replaceSnapshot, recordAction]
+    [id, replaceSnapshot, recordAction, showToast]
   );
 
   const handleSaveNote = useCallback(
@@ -210,8 +241,9 @@ export function RegistrarScreen() {
       const result = await updateCase(id, caseId, { note });
       replaceSnapshot(result);
       setEditingNoteId(null);
+      showToast('Note saved');
     },
-    [id, replaceSnapshot]
+    [id, replaceSnapshot, showToast]
   );
 
   // ---- Render ----
@@ -241,6 +273,10 @@ export function RegistrarScreen() {
   return (
     <div className="flex flex-col min-h-dvh">
       <CourtHeader courtDay={courtDay} connected={connected} />
+
+      {/* Multiple-active-case guardrail */}
+      <CriticalErrorBanner message={criticalError} />
+
       <StatusBanner
         status={courtDay.status}
         statusMessage={courtDay.statusMessage}
@@ -248,7 +284,6 @@ export function RegistrarScreen() {
         resumeTime={courtDay.resumeTime}
       />
 
-      {/* 6.5: Registrar view uses caseTitleFull */}
       {currentCase && <CurrentCaseCard courtCase={currentCase} view="registrar" />}
 
       <QuickActionBar
@@ -263,7 +298,6 @@ export function RegistrarScreen() {
 
       <NextUpStrip cases={upcoming} maxVisible={3} view="registrar" />
 
-      {/* Full list */}
       <div className="flex-1 overflow-y-auto">
         <div className="px-4 py-2 border-b border-court-border">
           <p className="text-xs text-court-text-dim font-semibold uppercase tracking-widest">
@@ -334,11 +368,13 @@ export function RegistrarScreen() {
           }}
         />
       )}
+
+      {/* Micro-toast confirmation */}
+      <Toast message={toast} />
     </div>
   );
 }
 
-// 6.4: Inline action buttons with tap protection
 function InlineActions({
   caseId,
   onAction,
