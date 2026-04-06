@@ -2,9 +2,8 @@ import type { ListItem, Prisma } from '@prisma/client';
 import { prisma } from './prisma.js';
 import { buildEnvelope } from './event-envelope-service.js';
 import { publish } from './sse-broadcaster.js';
-import { recomputePredictionsForCourtDay } from './court-day-service.js';
 import { ListItemStatus, CourtDayStatus } from '../domain/enums.js';
-import { ListItemEventType, CourtDayEventType } from '../domain/event-types.js';
+import { ListItemEventType } from '../domain/event-types.js';
 import { assertTransitionAllowed, isCallableNow, shouldAffectQueuePrediction } from '../domain/transition-rules.js';
 import type { ActorContext, CourtCallEventEnvelope } from '../domain/types.js';
 import {
@@ -32,6 +31,16 @@ import type {
 } from '../dto/requests.js';
 
 type CommandResult = { listItem: ListItem; envelope: CourtCallEventEnvelope };
+type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+async function nextSequence(tx: TxClient, courtDayId: string): Promise<number> {
+  const updated = await tx.courtDay.update({
+    where: { id: courtDayId },
+    data: { lastSequence: { increment: 1 } },
+    select: { lastSequence: true },
+  });
+  return updated.lastSequence;
+}
 
 // ─── Helper: transition + update in one shot ─────────────────────────────────
 
@@ -48,7 +57,6 @@ async function transitionItem(
 
     assertTransitionAllowed(item.status as ListItemStatus, targetStatus);
 
-    // Build the data object for Prisma update, separating known fields from extras
     const updateData: Record<string, unknown> = { status: targetStatus };
     for (const [k, v] of Object.entries(extraData)) {
       updateData[k] = v;
@@ -59,21 +67,22 @@ async function transitionItem(
       data: updateData,
     });
 
-    const update = await tx.listItemUpdate.create({
+    const seq = await nextSequence(tx, item.courtDayId);
+
+    const update = await tx.listUpdate.create({
       data: {
         listItemId,
         courtDayId: item.courtDayId,
+        sequence: seq,
         eventType,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        previousStatus: item.status,
-        newStatus: targetStatus,
-        payloadJson: (payloadOverride ?? extraData) as Prisma.InputJsonValue,
+        updatedById: actor.userId ?? null,
+        previousStatus: item.status as any,
+        newStatus: targetStatus as any,
+        snapshotNote: (payloadOverride?.publicNote as string) ?? (extraData.publicNote as string) ?? null,
       },
     });
 
-    return { item: updated, update, courtDayId: item.courtDayId, previousStatus: item.status };
+    return { item: updated, update, courtDayId: item.courtDayId, previousStatus: item.status, seq };
   });
 
   const envelope = buildEnvelope({
@@ -82,7 +91,8 @@ async function transitionItem(
     aggregateType: 'listitem',
     aggregateId: listItemId,
     courtDayId: result.courtDayId,
-    occurredAt: result.update.createdAt,
+    occurredAt: result.update.timestamp,
+    sequence: result.seq,
     actor,
     payload: {
       previousStatus: result.previousStatus,
@@ -92,17 +102,9 @@ async function transitionItem(
   });
 
   publish(envelope);
-
-  if (shouldAffectQueuePrediction(result.previousStatus as ListItemStatus, targetStatus)) {
-    await recomputePredictionsForCourtDay(result.courtDayId);
-  }
-
   return { listItem: result.item, envelope };
 }
 
-/**
- * Helper for non-status-changing metadata updates (notes, directions, etc.)
- */
 async function metadataUpdate(
   listItemId: string,
   eventType: string,
@@ -118,19 +120,19 @@ async function metadataUpdate(
       data: updateData,
     });
 
-    const update = await tx.listItemUpdate.create({
+    const seq = await nextSequence(tx, item.courtDayId);
+
+    const update = await tx.listUpdate.create({
       data: {
         listItemId,
         courtDayId: item.courtDayId,
+        sequence: seq,
         eventType,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        payloadJson: payload as Prisma.InputJsonValue,
+        updatedById: actor.userId ?? null,
       },
     });
 
-    return { item: updated, update, courtDayId: item.courtDayId };
+    return { item: updated, update, courtDayId: item.courtDayId, seq };
   });
 
   const envelope = buildEnvelope({
@@ -139,7 +141,8 @@ async function metadataUpdate(
     aggregateType: 'listitem',
     aggregateId: listItemId,
     courtDayId: result.courtDayId,
-    occurredAt: result.update.createdAt,
+    occurredAt: result.update.timestamp,
+    sequence: result.seq,
     actor,
     payload,
   });
@@ -156,19 +159,17 @@ export async function createListItem(
   actor: ActorContext,
 ): Promise<CommandResult> {
   const result = await prisma.$transaction(async (tx) => {
-    // Verify court day exists and is not closed
     const courtDay = await tx.courtDay.findUniqueOrThrow({ where: { id: courtDayId } });
-    if (courtDay.status === CourtDayStatus.CLOSED) {
-      throw new Error('Cannot add items to a closed court day');
+    if (courtDay.status === CourtDayStatus.CONCLUDED) {
+      throw new Error('Cannot add items to a concluded court day');
     }
 
-    // Determine queue position: append at end
     const lastItem = await tx.listItem.findFirst({
       where: { courtDayId },
-      orderBy: { queuePosition: 'desc' },
-      select: { queuePosition: true },
+      orderBy: { position: 'desc' },
+      select: { position: true },
     });
-    const queuePosition = (lastItem?.queuePosition ?? 0) + 1;
+    const position = (lastItem?.position ?? 0) + 1;
 
     const initialStatus = input.notBeforeTime
       ? ListItemStatus.NOT_BEFORE
@@ -177,37 +178,34 @@ export async function createListItem(
     const item = await tx.listItem.create({
       data: {
         courtDayId,
-        queuePosition,
-        caseName: input.caseName,
-        caseReference: input.caseReference,
-        partiesShort: input.partiesShort ?? null,
+        position,
+        caseTitleFull: input.caseTitleFull,
+        caseTitlePublic: input.caseTitlePublic,
+        caseReference: input.caseReference ?? null,
+        parties: input.parties ?? null,
+        counselNames: input.counselNames ?? [],
         status: initialStatus,
         estimatedDurationMinutes: input.estimatedDurationMinutes ?? null,
         notBeforeTime: input.notBeforeTime ? new Date(input.notBeforeTime) : null,
-        isPriority: input.isPriority ?? false,
         publicNote: input.publicNote ?? null,
         internalNote: input.internalNote ?? null,
       },
     });
 
-    const update = await tx.listItemUpdate.create({
+    const seq = await nextSequence(tx, courtDayId);
+
+    const update = await tx.listUpdate.create({
       data: {
         listItemId: item.id,
         courtDayId,
+        sequence: seq,
         eventType: ListItemEventType.CREATED,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        newStatus: initialStatus,
-        payloadJson: {
-          caseName: input.caseName,
-          caseReference: input.caseReference,
-          queuePosition,
-        },
+        updatedById: actor.userId ?? null,
+        newStatus: initialStatus as any,
       },
     });
 
-    return { item, update };
+    return { item, update, seq };
   });
 
   const envelope = buildEnvelope({
@@ -216,18 +214,18 @@ export async function createListItem(
     aggregateType: 'listitem',
     aggregateId: result.item.id,
     courtDayId,
-    occurredAt: result.update.createdAt,
+    occurredAt: result.update.timestamp,
+    sequence: result.seq,
     actor,
     payload: {
-      caseName: input.caseName,
-      caseReference: input.caseReference,
-      queuePosition: result.item.queuePosition,
+      caseTitlePublic: input.caseTitlePublic,
+      caseReference: input.caseReference ?? null,
+      position: result.item.position,
       status: result.item.status,
     },
   });
 
   publish(envelope);
-  await recomputePredictionsForCourtDay(courtDayId);
   return { listItem: result.item, envelope };
 }
 
@@ -236,7 +234,6 @@ export async function callItem(
   input: CallInput,
   actor: ActorContext,
 ): Promise<CommandResult> {
-  // Pre-check callable status before entering transaction
   const item = await prisma.listItem.findUniqueOrThrow({ where: { id: listItemId } });
 
   if (!input.override && !isCallableNow(item.status as ListItemStatus, item.notBeforeTime)) {
@@ -245,23 +242,13 @@ export async function callItem(
     );
   }
 
-  return transitionItem(listItemId, ListItemStatus.CALLING, ListItemEventType.CALLED, actor, {
-    calledAt: new Date(),
-  });
+  return transitionItem(listItemId, ListItemStatus.CALLING, ListItemEventType.CALLED, actor);
 }
 
 export async function startItem(
   listItemId: string,
   actor: ActorContext,
 ): Promise<CommandResult> {
-  // ── Single-active invariant ──────────────────────────────────────────
-  // At most one item may be in HEARING or CALLING at any time. If another
-  // item is currently active when the registrar starts a new one, we
-  // auto-complete the prior item. This mirrors real courtroom behaviour:
-  // the registrar moves on, the previous matter is implicitly concluded.
-  //
-  // The auto-completion writes its own append-only update and SSE event
-  // so the audit trail is complete.
   const result = await prisma.$transaction(async (tx) => {
     const target = await tx.listItem.findUniqueOrThrow({ where: { id: listItemId } });
 
@@ -269,7 +256,7 @@ export async function startItem(
 
     const now = new Date();
 
-    // Find any currently active items on the same court day
+    // Auto-complete active items (single active invariant)
     const activeItems = await tx.listItem.findMany({
       where: {
         courtDayId: target.courtDayId,
@@ -278,38 +265,32 @@ export async function startItem(
       },
     });
 
-    // Auto-complete each prior active item
     for (const active of activeItems) {
       await tx.listItem.update({
         where: { id: active.id },
         data: {
           status: 'CONCLUDED',
           actualEndTime: now,
-          // Preserve any existing outcomeCode; default to CONCLUDED if none
           outcomeCode: active.outcomeCode ?? 'CONCLUDED',
         },
       });
 
-      await tx.listItemUpdate.create({
+      const autoSeq = await nextSequence(tx, target.courtDayId);
+
+      await tx.listUpdate.create({
         data: {
           listItemId: active.id,
           courtDayId: target.courtDayId,
+          sequence: autoSeq,
           eventType: ListItemEventType.COMPLETED,
-          actorUserId: actor.userId,
-          actorDisplayName: actor.displayName,
-          actorRole: actor.role,
-          previousStatus: active.status,
-          newStatus: 'CONCLUDED',
-          payloadJson: {
-            autoCompleted: true,
-            reason: 'New item started — prior active item auto-concluded',
-            outcomeCode: active.outcomeCode ?? 'CONCLUDED',
-          } as Prisma.InputJsonValue,
+          updatedById: actor.userId ?? null,
+          previousStatus: active.status as any,
+          newStatus: 'CONCLUDED' as any,
+          snapshotNote: 'Auto-concluded: new item started',
         },
       });
     }
 
-    // Now start the target item
     const updated = await tx.listItem.update({
       where: { id: listItemId },
       data: {
@@ -318,19 +299,17 @@ export async function startItem(
       },
     });
 
-    const update = await tx.listItemUpdate.create({
+    const seq = await nextSequence(tx, target.courtDayId);
+
+    const update = await tx.listUpdate.create({
       data: {
         listItemId,
         courtDayId: target.courtDayId,
+        sequence: seq,
         eventType: ListItemEventType.STARTED,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        previousStatus: target.status,
-        newStatus: ListItemStatus.HEARING,
-        payloadJson: {
-          autoCompletedPriorItems: activeItems.map((a) => a.id),
-        } as Prisma.InputJsonValue,
+        updatedById: actor.userId ?? null,
+        previousStatus: target.status as any,
+        newStatus: ListItemStatus.HEARING as any,
       },
     });
 
@@ -340,11 +319,11 @@ export async function startItem(
       courtDayId: target.courtDayId,
       previousStatus: target.status,
       autoCompletedIds: activeItems.map((a) => a.id),
+      seq,
     };
   });
 
-  // Broadcast auto-completion events first so subscribers see the prior
-  // item conclude before the new one starts
+  // Broadcast auto-completion events first
   for (const id of result.autoCompletedIds) {
     const autoEnvelope = buildEnvelope({
       eventId: `auto_complete_${id}_${Date.now()}`,
@@ -353,23 +332,21 @@ export async function startItem(
       aggregateId: id,
       courtDayId: result.courtDayId,
       occurredAt: new Date(),
+      sequence: result.seq - 1, // auto-complete happened before the start
       actor,
-      payload: {
-        autoCompleted: true,
-        reason: 'New item started — prior active item auto-concluded',
-      },
+      payload: { autoCompleted: true },
     });
     publish(autoEnvelope);
   }
 
-  // Broadcast the start event
   const envelope = buildEnvelope({
     eventId: result.update.id,
     eventType: ListItemEventType.STARTED,
     aggregateType: 'listitem',
     aggregateId: listItemId,
     courtDayId: result.courtDayId,
-    occurredAt: result.update.createdAt,
+    occurredAt: result.update.timestamp,
+    sequence: result.seq,
     actor,
     payload: {
       previousStatus: result.previousStatus,
@@ -379,12 +356,10 @@ export async function startItem(
   });
 
   publish(envelope);
-  // Bridge: emit canonical CASE_STARTED and CASE_COMPLETED for auto-completed items
   bridgeCaseStarted(result.courtDayId, listItemId, actor);
   for (const id of result.autoCompletedIds) {
     bridgeCaseCompleted(result.courtDayId, id, 'CONCLUDED', actor);
   }
-  await recomputePredictionsForCourtDay(result.courtDayId);
   return { listItem: result.item, envelope };
 }
 
@@ -404,23 +379,20 @@ export async function extendEstimate(
       data: { estimatedDurationMinutes: newEstimate },
     });
 
-    const update = await tx.listItemUpdate.create({
+    const seq = await nextSequence(tx, item.courtDayId);
+
+    const update = await tx.listUpdate.create({
       data: {
         listItemId,
         courtDayId: item.courtDayId,
+        sequence: seq,
         eventType: ListItemEventType.ESTIMATE_EXTENDED,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        payloadJson: {
-          previousEstimate: currentEstimate,
-          additionalMinutes: input.additionalMinutes,
-          newEstimate,
-        },
+        updatedById: actor.userId ?? null,
+        minutesAdded: input.additionalMinutes,
       },
     });
 
-    return { item: updated, update, courtDayId: item.courtDayId };
+    return { item: updated, update, courtDayId: item.courtDayId, seq };
   });
 
   const envelope = buildEnvelope({
@@ -429,10 +401,10 @@ export async function extendEstimate(
     aggregateType: 'listitem',
     aggregateId: listItemId,
     courtDayId: result.courtDayId,
-    occurredAt: result.update.createdAt,
+    occurredAt: result.update.timestamp,
+    sequence: result.seq,
     actor,
     payload: {
-      previousEstimate: (result.item.estimatedDurationMinutes ?? 0) - input.additionalMinutes,
       additionalMinutes: input.additionalMinutes,
       newEstimate: result.item.estimatedDurationMinutes,
     },
@@ -440,7 +412,6 @@ export async function extendEstimate(
 
   publish(envelope);
   bridgeCaseDelayAdded(result.courtDayId, listItemId, input.additionalMinutes, actor);
-  await recomputePredictionsForCourtDay(result.courtDayId);
   return { listItem: result.item, envelope };
 }
 
@@ -454,14 +425,8 @@ export async function setNotBefore(
     ListItemStatus.NOT_BEFORE,
     ListItemEventType.NOT_BEFORE_SET,
     actor,
-    {
-      notBeforeTime: new Date(input.notBeforeTime),
-      publicNote: input.publicNote ?? undefined,
-    },
-    {
-      notBeforeTime: input.notBeforeTime,
-      publicNote: input.publicNote ?? null,
-    },
+    { notBeforeTime: new Date(input.notBeforeTime) },
+    { notBeforeTime: input.notBeforeTime, publicNote: input.publicNote ?? null },
   );
   bridgeCaseNotBeforeSet(result.envelope.courtDayId, listItemId, input.notBeforeTime, actor);
   return result;
@@ -479,15 +444,16 @@ export async function adjournItem(
     actor,
     {
       adjournedUntil: input.adjournedUntil ? new Date(input.adjournedUntil) : null,
+      adjournmentType: input.adjournmentType ?? null,
+      nextListingNote: input.nextListingNote ?? null,
       publicNote: input.publicNote ?? undefined,
       internalNote: input.internalNote ?? undefined,
       directionCode: input.directionCode ?? undefined,
     },
     {
       adjournedUntil: input.adjournedUntil ?? null,
+      adjournmentType: input.adjournmentType ?? null,
       publicNote: input.publicNote ?? null,
-      internalNote: input.internalNote ?? null,
-      directionCode: input.directionCode ?? null,
     },
   );
   bridgeCaseAdjourned(
@@ -513,10 +479,7 @@ export async function letStandItem(
       publicNote: input.publicNote ?? undefined,
       internalNote: input.internalNote ?? undefined,
     },
-    {
-      publicNote: input.publicNote ?? null,
-      internalNote: input.internalNote ?? null,
-    },
+    { publicNote: input.publicNote ?? null },
   );
 }
 
@@ -535,10 +498,7 @@ export async function standDownItem(
       publicNote: input.publicNote ?? undefined,
       internalNote: input.internalNote ?? undefined,
     },
-    {
-      publicNote: input.publicNote ?? null,
-      internalNote: input.internalNote ?? null,
-    },
+    { publicNote: input.publicNote ?? null },
   );
 }
 
@@ -556,9 +516,7 @@ export async function restoreItem(
       restoredAt: new Date(),
       publicNote: input.publicNote ?? undefined,
     },
-    {
-      publicNote: input.publicNote ?? null,
-    },
+    { publicNote: input.publicNote ?? null },
   );
 }
 
@@ -578,11 +536,7 @@ export async function completeItem(
       publicNote: input.publicNote ?? undefined,
       internalNote: input.internalNote ?? undefined,
     },
-    {
-      outcomeCode: input.outcomeCode,
-      publicNote: input.publicNote ?? null,
-      internalNote: input.internalNote ?? null,
-    },
+    { outcomeCode: input.outcomeCode, publicNote: input.publicNote ?? null },
   );
   bridgeCaseCompleted(result.envelope.courtDayId, listItemId, input.outcomeCode, actor);
   return result;
@@ -595,72 +549,49 @@ export async function reorderItem(
 ): Promise<CommandResult> {
   const result = await prisma.$transaction(async (tx) => {
     const item = await tx.listItem.findUniqueOrThrow({ where: { id: listItemId } });
-    const oldPosition = item.queuePosition;
-    const newPosition = input.targetQueuePosition;
+    const oldPosition = item.position;
+    const newPosition = input.targetPosition;
 
     if (oldPosition === newPosition) {
       throw new Error('Item is already at the target position');
     }
 
-    // Shift other items to make room
     if (newPosition < oldPosition) {
-      // Moving up: shift items in [newPosition, oldPosition-1] down by 1
       await tx.listItem.updateMany({
         where: {
           courtDayId: item.courtDayId,
-          queuePosition: { gte: newPosition, lt: oldPosition },
+          position: { gte: newPosition, lt: oldPosition },
         },
-        data: { queuePosition: { increment: 1 } },
+        data: { position: { increment: 1 } },
       });
     } else {
-      // Moving down: shift items in [oldPosition+1, newPosition] up by 1
       await tx.listItem.updateMany({
         where: {
           courtDayId: item.courtDayId,
-          queuePosition: { gt: oldPosition, lte: newPosition },
+          position: { gt: oldPosition, lte: newPosition },
         },
-        data: { queuePosition: { decrement: 1 } },
+        data: { position: { decrement: 1 } },
       });
     }
 
     const updated = await tx.listItem.update({
       where: { id: listItemId },
-      data: { queuePosition: newPosition },
+      data: { position: newPosition },
     });
 
-    const update = await tx.listItemUpdate.create({
+    const seq = await nextSequence(tx, item.courtDayId);
+
+    const update = await tx.listUpdate.create({
       data: {
         listItemId,
         courtDayId: item.courtDayId,
+        sequence: seq,
         eventType: ListItemEventType.REORDERED,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        payloadJson: {
-          previousPosition: oldPosition,
-          newPosition,
-        },
+        updatedById: actor.userId ?? null,
       },
     });
 
-    // Also emit a court-day-level resequence event
-    await tx.courtDayUpdate.create({
-      data: {
-        courtDayId: item.courtDayId,
-        eventType: CourtDayEventType.LIST_RESEQUENCED,
-        actorUserId: actor.userId,
-        actorDisplayName: actor.displayName,
-        actorRole: actor.role,
-        payloadJson: {
-          trigger: 'reorder',
-          listItemId,
-          previousPosition: oldPosition,
-          newPosition,
-        },
-      },
-    });
-
-    return { item: updated, update, courtDayId: item.courtDayId, oldPosition };
+    return { item: updated, update, courtDayId: item.courtDayId, oldPosition, seq };
   });
 
   const envelope = buildEnvelope({
@@ -669,16 +600,16 @@ export async function reorderItem(
     aggregateType: 'listitem',
     aggregateId: listItemId,
     courtDayId: result.courtDayId,
-    occurredAt: result.update.createdAt,
+    occurredAt: result.update.timestamp,
+    sequence: result.seq,
     actor,
     payload: {
       previousPosition: result.oldPosition,
-      newPosition: input.targetQueuePosition,
+      newPosition: input.targetPosition,
     },
   });
 
   publish(envelope);
-  await recomputePredictionsForCourtDay(result.courtDayId);
   return { listItem: result.item, envelope };
 }
 
@@ -711,7 +642,6 @@ export async function recordDirection(
   return metadataUpdate(listItemId, ListItemEventType.DIRECTION_RECORDED, actor, updateData, {
     directionCode: input.directionCode,
     publicNote: input.publicNote ?? null,
-    internalNote: input.internalNote ?? null,
   });
 }
 
@@ -729,7 +659,6 @@ export async function recordOutcome(
   return metadataUpdate(listItemId, ListItemEventType.OUTCOME_RECORDED, actor, updateData, {
     outcomeCode: input.outcomeCode,
     publicNote: input.publicNote ?? null,
-    internalNote: input.internalNote ?? null,
   });
 }
 
@@ -747,9 +676,6 @@ export async function removeItem(
       publicNote: input.publicNote ?? undefined,
       internalNote: input.internalNote ?? undefined,
     },
-    {
-      publicNote: input.publicNote ?? null,
-      internalNote: input.internalNote ?? null,
-    },
+    { publicNote: input.publicNote ?? null },
   );
 }

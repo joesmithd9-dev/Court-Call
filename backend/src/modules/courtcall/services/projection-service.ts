@@ -10,7 +10,7 @@ async function loadCourtDayWithItems(courtDayId: string) {
 
   const items = await prisma.listItem.findMany({
     where: { courtDayId },
-    orderBy: { queuePosition: 'asc' },
+    orderBy: { position: 'asc' },
   });
 
   return { courtDay, items };
@@ -30,9 +30,6 @@ export async function getRegistrarProjection(
   return mapRegistrarProjection(courtDay, items);
 }
 
-/**
- * Look up a court day by court + date. Returns the court day id if found.
- */
 export async function findCourtDayByCourtAndDate(
   courtId: string,
   date: string,

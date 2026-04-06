@@ -1,8 +1,9 @@
 /**
  * Canonical event types for the CourtCall event contract (LOCKED SPEC).
  *
- * This is a CLOSED SET. No dynamic types. No extensions without migration.
- * Every event in the CourtEvent table must be one of these types.
+ * These map to the canonical event types used in the spec.
+ * The event store uses ListUpdate and CourtDayUpdate tables with
+ * sequence numbers sourced from CourtDay.lastSequence.
  */
 
 export const CourtEventType = {
@@ -17,7 +18,7 @@ export const CourtEventType = {
 } as const;
 export type CourtEventType = (typeof CourtEventType)[keyof typeof CourtEventType];
 
-// ─── Payload Definitions (Deterministic) ──────────────────────────────────────
+// ─── Payload Definitions ──────────────────────────────────────────────────────
 
 export interface CaseStartedPayload {
   caseId: string;
@@ -30,12 +31,12 @@ export interface CaseCompletedPayload {
 
 export interface CaseAdjournedPayload {
   caseId: string;
-  adjournedTo: string; // ISO datetime
+  adjournedTo: string;
 }
 
 export interface CaseNotBeforeSetPayload {
   caseId: string;
-  notBefore: string; // ISO datetime
+  notBefore: string;
 }
 
 export interface CaseDelayAddedPayload {
@@ -43,7 +44,6 @@ export interface CaseDelayAddedPayload {
   minutes: number;
 }
 
-// COURT_ROSE and COURT_RESUMED have empty payloads
 export type CourtRosePayload = Record<string, never>;
 export type CourtResumedPayload = Record<string, never>;
 
@@ -52,7 +52,6 @@ export interface UndoAppliedPayload {
   reversedEventType: CourtEventType;
 }
 
-// Union of all event payloads
 export type CourtEventPayload =
   | CaseStartedPayload
   | CaseCompletedPayload
@@ -63,13 +62,13 @@ export type CourtEventPayload =
   | CourtResumedPayload
   | UndoAppliedPayload;
 
-// ─── CourtEvent Structure (Canonical) ─────────────────────────────────────────
+// ─── Unified Event Record ─────────────────────────────────────────────────────
 
 export interface CourtEvent {
   id: string;
   courtDayId: string;
   sequence: number;
-  createdAt: string; // ISO timestamp (server time)
+  createdAt: string;
   type: CourtEventType;
   payload: CourtEventPayload;
   causedBy: {
@@ -79,7 +78,7 @@ export interface CourtEvent {
   idempotencyKey?: string;
 }
 
-// ─── Court Status for Projection ──────────────────────────────────────────────
+// ─── Projection Types ─────────────────────────────────────────────────────────
 
 export type CourtDayLiveStatus = 'LIVE' | 'ROSE' | 'CLOSED';
 
@@ -104,5 +103,5 @@ export interface ProjectedCase {
 export interface CourtDaySnapshot {
   courtDay: ProjectedCourtDay;
   cases: ProjectedCase[];
-  serverTime: string; // ISO (MANDATORY)
+  serverTime: string;
 }

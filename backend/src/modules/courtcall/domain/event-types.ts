@@ -1,9 +1,8 @@
 /**
  * Canonical event type strings for CourtCall.
  *
- * These are used as the eventType field in CourtDayUpdate / ListItemUpdate
- * rows and in the SSE event envelope. Keep them stable — they form the
- * contract between backend and every consumer (frontend, analytics, exports).
+ * Used as the eventType field in ListUpdate / CourtDayUpdate rows
+ * and in the SSE event envelope.
  */
 
 // ─── CourtDay events ─────────────────────────────────────────────────────────
@@ -12,14 +11,11 @@ export const CourtDayEventType = {
   CREATED: 'courtday.created',
   LIVE_STARTED: 'courtday.live_started',
   JUDGE_ROSE: 'courtday.judge_rose',
-  RESUMED: 'courtday.resumed',
+  AT_LUNCH: 'courtday.at_lunch',
   PAUSED: 'courtday.paused',
-  CLOSED: 'courtday.closed',
-  BANNER_UPDATED: 'courtday.banner_updated',
-
-  // Derived / system-generated
-  PROJECTIONS_RECOMPUTED: 'courtday.projections_recomputed',
-  LIST_RESEQUENCED: 'courtday.list_resequenced',
+  RESUMED: 'courtday.resumed',
+  CONCLUDED: 'courtday.concluded',
+  UNDO_APPLIED: 'courtday.undo_applied',
 } as const;
 export type CourtDayEventType = (typeof CourtDayEventType)[keyof typeof CourtDayEventType];
 
@@ -29,7 +25,6 @@ export const ListItemEventType = {
   CREATED: 'listitem.created',
   CALLED: 'listitem.called',
   STARTED: 'listitem.started',
-  ESTIMATE_SET: 'listitem.estimate_set',
   ESTIMATE_EXTENDED: 'listitem.estimate_extended',
   NOT_BEFORE_SET: 'listitem.not_before_set',
   ADJOURNED: 'listitem.adjourned',
@@ -40,10 +35,12 @@ export const ListItemEventType = {
   NOTE_UPDATED: 'listitem.note_updated',
   OUTCOME_RECORDED: 'listitem.outcome_recorded',
   COMPLETED: 'listitem.completed',
+  SETTLED: 'listitem.settled',
+  STRUCK_OUT: 'listitem.struck_out',
   REORDERED: 'listitem.reordered',
   REMOVED: 'listitem.removed',
+  UNDO_APPLIED: 'listitem.undo_applied',
 } as const;
 export type ListItemEventType = (typeof ListItemEventType)[keyof typeof ListItemEventType];
 
-// Union for convenience
 export type CourtCallEventType = CourtDayEventType | ListItemEventType;

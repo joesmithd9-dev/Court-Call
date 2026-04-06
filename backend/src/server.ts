@@ -58,7 +58,7 @@ app.setErrorHandler((error, _request, reply) => {
     return;
   }
 
-  // Business logic errors (thrown as plain Error with message)
+  // Business logic errors → 409 Conflict
   if (error.message?.startsWith('Cannot ') || error.message?.startsWith('Item ') || error.message?.startsWith('Court day')) {
     reply.status(409).send({ error: 'Conflict', message: error.message });
     return;

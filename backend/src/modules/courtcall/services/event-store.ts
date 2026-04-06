@@ -1,7 +1,4 @@
-import { v4 as uuid } from 'uuid';
-import type { Prisma } from '@prisma/client';
 import { prisma } from './prisma.js';
-import type { CourtEvent as CourtEventRow } from '@prisma/client';
 import type { ActorContext } from '../domain/types.js';
 import {
   CourtEventType,
@@ -11,22 +8,6 @@ import {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function toCourtEvent(row: CourtEventRow): CourtEvent {
-  return {
-    id: row.id,
-    courtDayId: row.courtDayId,
-    sequence: row.sequence,
-    createdAt: row.createdAt.toISOString(),
-    type: row.type as CourtEventType,
-    payload: row.payload as unknown as CourtEventPayload,
-    causedBy: {
-      userId: row.causedByUserId,
-      role: row.causedByRole as 'REGISTRAR' | 'SYSTEM',
-    },
-    idempotencyKey: row.idempotencyKey ?? undefined,
-  };
-}
-
 const VALID_EVENT_TYPES = new Set<string>(Object.values(CourtEventType));
 
 function assertValidEventType(type: string): asserts type is CourtEventType {
@@ -35,153 +16,270 @@ function assertValidEventType(type: string): asserts type is CourtEventType {
   }
 }
 
+// ─── Sequence Management ────────────────────────────────────────────────────
+
+/**
+ * Atomically increment CourtDay.lastSequence and return the new value.
+ * This MUST be called inside the same transaction as the event insert.
+ */
+async function nextSequence(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  courtDayId: string,
+): Promise<number> {
+  const updated = await tx.courtDay.update({
+    where: { id: courtDayId },
+    data: { lastSequence: { increment: 1 } },
+    select: { lastSequence: true },
+  });
+  return updated.lastSequence;
+}
+
 // ─── Idempotency Check ──────────────────────────────────────────────────────
 
 /**
- * Check if an idempotency key has already been used.
- * If so, return the previously created event.
- * If not, return null.
+ * Check if a court day update with this idempotency key already exists.
  */
-export async function checkIdempotency(
-  idempotencyKey: string,
-): Promise<CourtEvent | null> {
-  const record = await prisma.idempotencyRecord.findUnique({
-    where: { key: idempotencyKey },
+async function checkCourtDayIdempotency(key: string): Promise<{ id: string; sequence: number } | null> {
+  const existing = await prisma.courtDayUpdate.findFirst({
+    where: { idempotencyKey: key },
+    select: { id: true, sequence: true },
   });
-
-  if (!record) return null;
-
-  const event = await prisma.courtEvent.findUniqueOrThrow({
-    where: { id: record.eventId },
-  });
-
-  return toCourtEvent(event);
+  return existing;
 }
 
-// ─── Atomic Event Write ─────────────────────────────────────────────────────
+/**
+ * Check if a list update with this idempotency key already exists.
+ */
+async function checkListIdempotency(key: string): Promise<{ id: string; sequence: number } | null> {
+  const existing = await prisma.listUpdate.findFirst({
+    where: { idempotencyKey: key },
+    select: { id: true, sequence: true },
+  });
+  return existing;
+}
 
-export interface AppendEventInput {
+// ─── Court Day Event Append ─────────────────────────────────────────────────
+
+export interface AppendCourtDayEventInput {
   courtDayId: string;
-  type: CourtEventType;
-  payload: CourtEventPayload;
+  eventType: string;
+  previousStatus?: string;
+  newStatus?: string;
+  publicNote?: string;
+  reversedEventId?: string;
+  actor: ActorContext;
+  idempotencyKey?: string;
+}
+
+export interface AppendedEvent {
+  id: string;
+  sequence: number;
+  eventType: string;
+  timestamp: Date;
+}
+
+/**
+ * Append a court day event with atomic sequence enforcement.
+ *
+ * Transaction: update CourtDay.lastSequence → +1, insert CourtDayUpdate with that sequence.
+ */
+export async function appendCourtDayEvent(input: AppendCourtDayEventInput): Promise<AppendedEvent> {
+  // Idempotency gate
+  if (input.idempotencyKey) {
+    const existing = await checkCourtDayIdempotency(input.idempotencyKey);
+    if (existing) return { id: existing.id, sequence: existing.sequence, eventType: input.eventType, timestamp: new Date() };
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const seq = await nextSequence(tx, input.courtDayId);
+
+    const record = await tx.courtDayUpdate.create({
+      data: {
+        courtDayId: input.courtDayId,
+        sequence: seq,
+        eventType: input.eventType,
+        previousStatus: input.previousStatus as any,
+        newStatus: input.newStatus as any,
+        publicNote: input.publicNote,
+        reversedEventId: input.reversedEventId,
+        updatedById: input.actor.userId ?? null,
+        idempotencyKey: input.idempotencyKey ?? null,
+      },
+    });
+
+    return { id: record.id, sequence: seq, eventType: input.eventType, timestamp: record.timestamp };
+  });
+}
+
+// ─── List Item Event Append ─────────────────────────────────────────────────
+
+export interface AppendListEventInput {
+  courtDayId: string;
+  listItemId: string;
+  eventType: string;
+  previousStatus?: string;
+  newStatus?: string;
+  minutesAdded?: number;
+  snapshotNote?: string;
+  reversedEventId?: string;
   actor: ActorContext;
   idempotencyKey?: string;
 }
 
 /**
- * Append a single event to the court day's event stream.
+ * Append a list item event with atomic sequence enforcement.
  *
- * Guarantees:
- * 1. Sequence = lastSequence + 1 (monotonic, no gaps, no duplicates)
- * 2. Atomic write (event persisted inside transaction before returning)
- * 3. Idempotency (duplicate key returns same event, no new write)
- *
- * The sequence is enforced via a SELECT MAX(sequence) + INSERT inside a
- * serializable transaction. The unique constraint on (courtDayId, sequence)
- * provides a final safety net against race conditions.
+ * Transaction: update CourtDay.lastSequence → +1, insert ListUpdate with that sequence.
  */
-export async function appendEvent(input: AppendEventInput): Promise<CourtEvent> {
-  assertValidEventType(input.type);
-
-  // ── Idempotency gate ──────────────────────────────────────────────────
+export async function appendListEvent(input: AppendListEventInput): Promise<AppendedEvent> {
+  // Idempotency gate
   if (input.idempotencyKey) {
-    const existing = await checkIdempotency(input.idempotencyKey);
-    if (existing) return existing;
+    const existing = await checkListIdempotency(input.idempotencyKey);
+    if (existing) return { id: existing.id, sequence: existing.sequence, eventType: input.eventType, timestamp: new Date() };
   }
 
-  // ── Atomic write with sequence enforcement ────────────────────────────
-  const eventId = uuid();
+  return prisma.$transaction(async (tx) => {
+    const seq = await nextSequence(tx, input.courtDayId);
 
-  const row = await prisma.$transaction(async (tx) => {
-    // Get the current max sequence for this court day (lock row for update)
-    const lastEvent = await tx.courtEvent.findFirst({
-      where: { courtDayId: input.courtDayId },
-      orderBy: { sequence: 'desc' },
-      select: { sequence: true },
-    });
-
-    const nextSequence = (lastEvent?.sequence ?? 0) + 1;
-
-    // Insert the event with the next sequence number
-    const created = await tx.courtEvent.create({
+    const record = await tx.listUpdate.create({
       data: {
-        id: eventId,
         courtDayId: input.courtDayId,
-        sequence: nextSequence,
-        type: input.type,
-        payload: input.payload as unknown as Prisma.InputJsonValue,
-        causedByUserId: input.actor.userId ?? null,
-        causedByRole: input.actor.role,
+        sequence: seq,
+        listItemId: input.listItemId,
+        eventType: input.eventType,
+        previousStatus: input.previousStatus as any,
+        newStatus: input.newStatus as any,
+        minutesAdded: input.minutesAdded,
+        snapshotNote: input.snapshotNote,
+        reversedEventId: input.reversedEventId,
+        updatedById: input.actor.userId ?? null,
         idempotencyKey: input.idempotencyKey ?? null,
       },
     });
 
-    // Record idempotency if key provided
-    if (input.idempotencyKey) {
-      await tx.idempotencyRecord.create({
-        data: {
-          key: input.idempotencyKey,
-          eventId: created.id,
-          responseHash: JSON.stringify({ eventId: created.id, sequence: nextSequence }),
-        },
-      });
-    }
-
-    return created;
+    return { id: record.id, sequence: seq, eventType: input.eventType, timestamp: record.timestamp };
   });
-
-  return toCourtEvent(row);
 }
 
-// ─── Read Operations ────────────────────────────────────────────────────────
+// ─── Unified Event Read ─────────────────────────────────────────────────────
+
+export interface RawEvent {
+  id: string;
+  courtDayId: string;
+  sequence: number;
+  eventType: string;
+  timestamp: Date;
+  updatedById: string | null;
+  reversedEventId: string | null;
+  idempotencyKey: string | null;
+  // list-specific
+  listItemId?: string;
+  previousStatus?: string | null;
+  newStatus?: string | null;
+}
 
 /**
- * Get all events for a court day, ordered by sequence.
+ * Get all events (court day + list) for a court day, ordered by sequence.
  */
-export async function getEvents(courtDayId: string): Promise<CourtEvent[]> {
-  const rows = await prisma.courtEvent.findMany({
-    where: { courtDayId },
-    orderBy: { sequence: 'asc' },
-  });
-  return rows.map(toCourtEvent);
+export async function getAllEvents(courtDayId: string): Promise<RawEvent[]> {
+  const [courtUpdates, listUpdates] = await Promise.all([
+    prisma.courtDayUpdate.findMany({
+      where: { courtDayId },
+      orderBy: { sequence: 'asc' },
+    }),
+    prisma.listUpdate.findMany({
+      where: { courtDayId },
+      orderBy: { sequence: 'asc' },
+    }),
+  ]);
+
+  const events: RawEvent[] = [
+    ...courtUpdates.map((u) => ({
+      id: u.id,
+      courtDayId: u.courtDayId,
+      sequence: u.sequence,
+      eventType: u.eventType,
+      timestamp: u.timestamp,
+      updatedById: u.updatedById,
+      reversedEventId: u.reversedEventId,
+      idempotencyKey: u.idempotencyKey,
+      previousStatus: u.previousStatus,
+      newStatus: u.newStatus,
+    })),
+    ...listUpdates.map((u) => ({
+      id: u.id,
+      courtDayId: u.courtDayId,
+      sequence: u.sequence,
+      eventType: u.eventType,
+      timestamp: u.timestamp,
+      updatedById: u.updatedById,
+      reversedEventId: u.reversedEventId,
+      idempotencyKey: u.idempotencyKey,
+      listItemId: u.listItemId,
+      previousStatus: u.previousStatus,
+      newStatus: u.newStatus,
+    })),
+  ];
+
+  return events.sort((a, b) => a.sequence - b.sequence);
 }
 
 /**
  * Get events from a specific sequence onward (for SSE replay).
- * Used when client sends Last-Event-Sequence header.
  */
 export async function getEventsFromSequence(
   courtDayId: string,
   fromSequence: number,
-): Promise<CourtEvent[]> {
-  const rows = await prisma.courtEvent.findMany({
-    where: {
-      courtDayId,
-      sequence: { gte: fromSequence },
-    },
-    orderBy: { sequence: 'asc' },
-  });
-  return rows.map(toCourtEvent);
+): Promise<RawEvent[]> {
+  const [courtUpdates, listUpdates] = await Promise.all([
+    prisma.courtDayUpdate.findMany({
+      where: { courtDayId, sequence: { gte: fromSequence } },
+      orderBy: { sequence: 'asc' },
+    }),
+    prisma.listUpdate.findMany({
+      where: { courtDayId, sequence: { gte: fromSequence } },
+      orderBy: { sequence: 'asc' },
+    }),
+  ]);
+
+  const events: RawEvent[] = [
+    ...courtUpdates.map((u) => ({
+      id: u.id,
+      courtDayId: u.courtDayId,
+      sequence: u.sequence,
+      eventType: u.eventType,
+      timestamp: u.timestamp,
+      updatedById: u.updatedById,
+      reversedEventId: u.reversedEventId,
+      idempotencyKey: u.idempotencyKey,
+      previousStatus: u.previousStatus,
+      newStatus: u.newStatus,
+    })),
+    ...listUpdates.map((u) => ({
+      id: u.id,
+      courtDayId: u.courtDayId,
+      sequence: u.sequence,
+      eventType: u.eventType,
+      timestamp: u.timestamp,
+      updatedById: u.updatedById,
+      reversedEventId: u.reversedEventId,
+      idempotencyKey: u.idempotencyKey,
+      listItemId: u.listItemId,
+      previousStatus: u.previousStatus,
+      newStatus: u.newStatus,
+    })),
+  ];
+
+  return events.sort((a, b) => a.sequence - b.sequence);
 }
 
 /**
  * Get the last sequence number for a court day.
  */
 export async function getLastSequence(courtDayId: string): Promise<number> {
-  const lastEvent = await prisma.courtEvent.findFirst({
-    where: { courtDayId },
-    orderBy: { sequence: 'desc' },
-    select: { sequence: true },
+  const courtDay = await prisma.courtDay.findUniqueOrThrow({
+    where: { id: courtDayId },
+    select: { lastSequence: true },
   });
-  return lastEvent?.sequence ?? 0;
-}
-
-/**
- * Get a single event by ID.
- */
-export async function getEventById(eventId: string): Promise<CourtEvent | null> {
-  const row = await prisma.courtEvent.findUnique({
-    where: { id: eventId },
-  });
-  return row ? toCourtEvent(row) : null;
+  return courtDay.lastSequence;
 }

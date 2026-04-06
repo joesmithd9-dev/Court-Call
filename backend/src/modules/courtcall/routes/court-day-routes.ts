@@ -3,42 +3,35 @@ import {
   CreateCourtDaySchema,
   StartLiveSchema,
   JudgeRoseSchema,
+  AtLunchSchema,
   ResumeSchema,
-  CloseCourtDaySchema,
+  ConcludeCourtDaySchema,
 } from '../dto/requests.js';
 import * as courtDayService from '../services/court-day-service.js';
 import * as projectionService from '../services/projection-service.js';
 import type { ActorContext } from '../domain/types.js';
 import type { CommandResult } from '../dto/responses.js';
 
-/**
- * Extract actor context from request headers.
- * In production this would come from an auth middleware / JWT.
- * For MVP we accept explicit headers.
- */
 function extractActor(headers: Record<string, string | string[] | undefined>): ActorContext {
   return {
     userId: (headers['x-actor-user-id'] as string) ?? undefined,
-    displayName: (headers['x-actor-display-name'] as string) ?? undefined,
     role: ((headers['x-actor-role'] as string)?.toUpperCase() === 'SYSTEM' ? 'SYSTEM' : 'REGISTRAR') as ActorContext['role'],
   };
 }
 
-function commandResult(eventId: string, eventType: string): CommandResult {
-  return { success: true, eventId, eventType };
+function commandResult(eventId: string, eventType: string, sequence: number): CommandResult {
+  return { success: true, eventId, eventType, sequence };
 }
 
 export async function courtDayRoutes(app: FastifyInstance): Promise<void> {
-  // ─── Create court day ────────────────────────────────────────────────
   app.post('/v1/court-days', async (request, reply) => {
     const input = CreateCourtDaySchema.parse(request.body);
     const actor = extractActor(request.headers);
     const { envelope } = await courtDayService.createCourtDay(input, actor);
     reply.status(201);
-    return commandResult(envelope.eventId, envelope.eventType);
+    return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
   });
 
-  // ─── Start live ──────────────────────────────────────────────────────
   app.post<{ Params: { courtDayId: string } }>(
     '/v1/court-days/:courtDayId/start-live',
     async (request, reply) => {
@@ -46,11 +39,10 @@ export async function courtDayRoutes(app: FastifyInstance): Promise<void> {
       const actor = extractActor(request.headers);
       const { envelope } = await courtDayService.startLive(request.params.courtDayId, input, actor);
       reply.status(200);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Judge rose ──────────────────────────────────────────────────────
   app.post<{ Params: { courtDayId: string } }>(
     '/v1/court-days/:courtDayId/judge-rose',
     async (request, reply) => {
@@ -58,11 +50,21 @@ export async function courtDayRoutes(app: FastifyInstance): Promise<void> {
       const actor = extractActor(request.headers);
       const { envelope } = await courtDayService.judgeRose(request.params.courtDayId, input, actor);
       reply.status(200);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Resume ──────────────────────────────────────────────────────────
+  app.post<{ Params: { courtDayId: string } }>(
+    '/v1/court-days/:courtDayId/at-lunch',
+    async (request, reply) => {
+      const input = AtLunchSchema.parse(request.body);
+      const actor = extractActor(request.headers);
+      const { envelope } = await courtDayService.atLunch(request.params.courtDayId, input, actor);
+      reply.status(200);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
+    },
+  );
+
   app.post<{ Params: { courtDayId: string } }>(
     '/v1/court-days/:courtDayId/resume',
     async (request, reply) => {
@@ -70,23 +72,21 @@ export async function courtDayRoutes(app: FastifyInstance): Promise<void> {
       const actor = extractActor(request.headers);
       const { envelope } = await courtDayService.resume(request.params.courtDayId, input, actor);
       reply.status(200);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Close ───────────────────────────────────────────────────────────
   app.post<{ Params: { courtDayId: string } }>(
-    '/v1/court-days/:courtDayId/close',
+    '/v1/court-days/:courtDayId/conclude',
     async (request, reply) => {
-      const input = CloseCourtDaySchema.parse(request.body);
+      const input = ConcludeCourtDaySchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await courtDayService.closeCourtDay(request.params.courtDayId, input, actor);
+      const { envelope } = await courtDayService.concludeCourtDay(request.params.courtDayId, input, actor);
       reply.status(200);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Read: public snapshot ───────────────────────────────────────────
   app.get<{ Params: { courtDayId: string } }>(
     '/v1/public/court-days/:courtDayId',
     async (request) => {
@@ -94,7 +94,6 @@ export async function courtDayRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ─── Read: registrar snapshot ────────────────────────────────────────
   app.get<{ Params: { courtDayId: string } }>(
     '/v1/registrar/court-days/:courtDayId',
     async (request) => {
@@ -102,7 +101,6 @@ export async function courtDayRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // ─── Read: lookup court day by court + date ──────────────────────────
   app.get<{ Params: { courtId: string; date: string } }>(
     '/v1/courts/:courtId/court-days/:date',
     async (request, reply) => {
