@@ -22,230 +22,162 @@ import type { CommandResult } from '../dto/responses.js';
 function extractActor(headers: Record<string, string | string[] | undefined>): ActorContext {
   return {
     userId: (headers['x-actor-user-id'] as string) ?? undefined,
-    displayName: (headers['x-actor-display-name'] as string) ?? undefined,
     role: ((headers['x-actor-role'] as string)?.toUpperCase() === 'SYSTEM' ? 'SYSTEM' : 'REGISTRAR') as ActorContext['role'],
   };
 }
 
-function commandResult(eventId: string, eventType: string): CommandResult {
-  return { success: true, eventId, eventType };
+function commandResult(eventId: string, eventType: string, sequence: number): CommandResult {
+  return { success: true, eventId, eventType, sequence };
 }
 
 export async function listItemRoutes(app: FastifyInstance): Promise<void> {
-  // ─── Create list item ────────────────────────────────────────────────
   app.post<{ Params: { courtDayId: string } }>(
     '/v1/court-days/:courtDayId/list-items',
     async (request, reply) => {
       const input = CreateListItemSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.createListItem(
-        request.params.courtDayId,
-        input,
-        actor,
-      );
+      const { envelope } = await listItemService.createListItem(request.params.courtDayId, input, actor);
       reply.status(201);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Call ────────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/call',
     async (request) => {
       const input = CallSchema.parse(request.body);
       const actor = extractActor(request.headers);
       const { envelope } = await listItemService.callItem(request.params.listItemId, input, actor);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Start (hearing begins) ──────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/start',
     async (request) => {
       const actor = extractActor(request.headers);
       const { envelope } = await listItemService.startItem(request.params.listItemId, actor);
-      return commandResult(envelope.eventId, envelope.eventType);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Extend estimate ─────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/extend-estimate',
     async (request) => {
       const input = ExtendEstimateSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.extendEstimate(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.extendEstimate(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Not before ──────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/not-before',
     async (request) => {
       const input = NotBeforeSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.setNotBefore(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.setNotBefore(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Adjourn ─────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/adjourn',
     async (request) => {
       const input = AdjournSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.adjournItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.adjournItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Let stand ───────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/let-stand',
     async (request) => {
       const input = LetStandSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.letStandItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.letStandItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Stood down ──────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/stood-down',
     async (request) => {
       const input = StoodDownSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.standDownItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.standDownItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Restore ─────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/restore',
     async (request) => {
       const input = RestoreSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.restoreItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.restoreItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Complete ────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/complete',
     async (request) => {
       const input = CompleteSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.completeItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.completeItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Reorder ─────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/reorder',
     async (request) => {
       const input = ReorderSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.reorderItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.reorderItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Note ────────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/note',
     async (request) => {
       const input = NoteSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.updateNote(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.updateNote(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Direction ───────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/direction',
     async (request) => {
       const input = DirectionSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.recordDirection(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.recordDirection(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Outcome ─────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/outcome',
     async (request) => {
       const input = OutcomeSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.recordOutcome(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.recordOutcome(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 
-  // ─── Remove ──────────────────────────────────────────────────────────
   app.post<{ Params: { listItemId: string } }>(
     '/v1/list-items/:listItemId/remove',
     async (request) => {
       const input = RemoveSchema.parse(request.body);
       const actor = extractActor(request.headers);
-      const { envelope } = await listItemService.removeItem(
-        request.params.listItemId,
-        input,
-        actor,
-      );
-      return commandResult(envelope.eventId, envelope.eventType);
+      const { envelope } = await listItemService.removeItem(request.params.listItemId, input, actor);
+      return commandResult(envelope.eventId, envelope.eventType, envelope.sequence);
     },
   );
 }

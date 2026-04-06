@@ -3,105 +3,94 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create a court
-  const court = await prisma.court.upsert({
-    where: { id: '00000000-0000-0000-0000-000000000001' },
-    update: {},
-    create: {
-      id: '00000000-0000-0000-0000-000000000001',
+  const court = await prisma.court.create({
+    data: {
       name: 'Supreme Court of New South Wales',
       courtLevel: 'SUPREME',
       location: 'Sydney',
-      room: 'Court 12A',
-      isActive: true,
+      roomLabel: 'Court 12A',
+      active: true,
     },
   });
   console.log(`Court: ${court.name} (${court.id})`);
 
-  // Create a court day for today
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const courtDay = await prisma.courtDay.upsert({
-    where: {
-      courtId_date: { courtId: court.id, date: today },
-    },
-    update: {},
-    create: {
+  const courtDay = await prisma.courtDay.create({
+    data: {
       courtId: court.id,
       date: today,
       judgeName: 'Justice Williams',
-      registrarName: 'M. Chen',
-      status: 'SCHEDULED',
-      sessionStatus: 'BEFORE_SITTING',
+      sessionPeriod: 'MORNING',
+      status: 'SETUP',
     },
   });
   console.log(`Court Day: ${courtDay.id} (${courtDay.date.toISOString().split('T')[0]})`);
 
-  // Create sample list items
   const items = [
     {
-      caseName: 'Smith v Jones',
+      caseTitleFull: 'Smith v Jones [2026] NSWSC 123',
+      caseTitlePublic: 'Smith v Jones',
       caseReference: '2026/00123',
-      partiesShort: 'Smith (P) / Jones (D)',
+      parties: 'Smith (P) / Jones (D)',
       estimatedDurationMinutes: 30,
-      queuePosition: 1,
+      position: 1,
       publicNote: 'Application for interim injunction',
     },
     {
-      caseName: 'Re Application of ABC Pty Ltd',
+      caseTitleFull: 'Re Application of ABC Pty Ltd [2026] NSWSC 456',
+      caseTitlePublic: 'Re Application of ABC Pty Ltd',
       caseReference: '2026/00456',
-      partiesShort: 'ABC Pty Ltd (Applicant)',
+      parties: 'ABC Pty Ltd (Applicant)',
       estimatedDurationMinutes: 15,
-      queuePosition: 2,
+      position: 2,
       publicNote: 'Directions hearing',
     },
     {
-      caseName: 'Brown v State of NSW',
+      caseTitleFull: 'Brown v State of NSW [2026] NSWSC 789',
+      caseTitlePublic: 'Brown v State of NSW',
       caseReference: '2026/00789',
-      partiesShort: 'Brown (P) / State (D)',
+      parties: 'Brown (P) / State (D)',
       estimatedDurationMinutes: 60,
-      queuePosition: 3,
-      isPriority: true,
+      position: 3,
       publicNote: 'Part-heard from previous sitting',
     },
     {
-      caseName: 'Estate of Williams (deceased)',
+      caseTitleFull: 'Estate of Williams (deceased) [2026] NSWSC 234',
+      caseTitlePublic: 'Estate of Williams (deceased)',
       caseReference: '2026/00234',
-      partiesShort: 'Williams Estate',
+      parties: 'Williams Estate',
       estimatedDurationMinutes: 20,
-      queuePosition: 4,
+      position: 4,
     },
     {
-      caseName: 'Chen v Metropolitan Transport',
+      caseTitleFull: 'Chen v Metropolitan Transport [2026] NSWSC 567',
+      caseTitlePublic: 'Chen v Metropolitan Transport',
       caseReference: '2026/00567',
-      partiesShort: 'Chen (P) / Metro Transport (D)',
+      parties: 'Chen (P) / Metro Transport (D)',
       estimatedDurationMinutes: 45,
-      queuePosition: 5,
+      position: 5,
       publicNote: 'Motion to strike',
     },
   ];
 
   for (const item of items) {
-    const created = await prisma.listItem.upsert({
-      where: {
-        id: `00000000-0000-0000-0000-00000000010${item.queuePosition}`,
-      },
-      update: {},
-      create: {
-        id: `00000000-0000-0000-0000-00000000010${item.queuePosition}`,
+    const created = await prisma.listItem.create({
+      data: {
         courtDayId: courtDay.id,
-        caseName: item.caseName,
+        caseTitleFull: item.caseTitleFull,
+        caseTitlePublic: item.caseTitlePublic,
         caseReference: item.caseReference,
-        partiesShort: item.partiesShort ?? null,
+        parties: item.parties ?? null,
+        counselNames: [],
         estimatedDurationMinutes: item.estimatedDurationMinutes,
-        queuePosition: item.queuePosition,
+        position: item.position,
         status: 'WAITING',
-        isPriority: item.isPriority ?? false,
         publicNote: item.publicNote ?? null,
       },
     });
-    console.log(`  Item ${created.queuePosition}: ${created.caseName}`);
+    console.log(`  Item ${created.position}: ${created.caseTitlePublic}`);
   }
 
   console.log('\nSeed complete. Use the court day ID to test endpoints:');
