@@ -1,14 +1,9 @@
-// ============================================================
-// CourtCall — Production Schema (Event-Driven)
-// PostgreSQL · Prisma · Fastify · TypeScript
-// ============================================================
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -31,24 +26,24 @@ model CourtDay {
 }
 
 model CourtCase {
-  id               String   @id @default(uuid())
-  courtDayId       String
-  position         Int
-  caseName         String   @default("")
-  caseTitleFull    String   @default("")
-  caseTitlePublic  String   @default("")
-  caseNumber       String?
-  matterType       String?
-  status           String   @default("pending")
-  scheduledTime    String?
-  startedAt        String?
-  estimatedMinutes Int?
+  id                 String   @id @default(uuid())
+  courtDayId         String
+  position           Int
+  caseName           String   @default("")
+  caseTitleFull      String   @default("")
+  caseTitlePublic    String   @default("")
+  caseNumber         String?
+  matterType         String?
+  status             String   @default("pending")
+  scheduledTime      String?
+  startedAt          String?
+  estimatedMinutes   Int?
   predictedStartTime String?
-  notBeforeTime    String?
-  adjournedToTime  String?
-  note             String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  notBeforeTime      String?
+  adjournedToTime    String?
+  note               String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   courtDay CourtDay @relation(fields: [courtDayId], references: [id])
 
@@ -71,283 +66,4 @@ model CourtEvent {
 
   @@unique([courtDayId, sequence])
   @@unique([courtDayId, idempotencyKey])
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
-// ============================================================
-// ENUMS
-// ============================================================
-
-enum UserRole {
-  REGISTRAR
-  COUNSEL
-  ADMIN
-}
-
-enum CourtDayStatus {
-  SETUP
-  LIVE
-  JUDGE_ROSE
-  AT_LUNCH
-  PAUSED
-  CONCLUDED
-}
-
-enum SessionPeriod {
-  MORNING
-  AFTERNOON
-}
-
-enum ListItemStatus {
-  WAITING
-  CALLING
-  HEARING
-  LET_STAND
-  NOT_BEFORE
-  STOOD_DOWN
-  ADJOURNED
-  PART_HEARD
-  CONCLUDED
-  SETTLED
-  STRUCK_OUT
-  REMOVED
-}
-
-enum DirectionCode {
-  MENTION
-  FOR_HEARING
-  CONSENT
-  PART_HEARD
-  LIBERTY_TO_REENTER
-  COSTS_RESERVED
-  NO_ORDER
-  REPLYING_PAPERS
-  INTERPRETER_REQUIRED
-  COUNSEL_TO_ATTEND
-  OTHER
-}
-
-enum OutcomeCode {
-  CONCLUDED
-  ADJOURNED_SAME_DAY
-  ADJOURNED_NEXT_TERM
-  ADJOURNED_DATE_FIXED
-  ADJOURNED_DATE_TO_BE_FIXED
-  PART_HEARD
-  SETTLED
-  STRUCK_OUT
-  LIBERTY_TO_REENTER
-  REMOVED
-}
-
-enum AdjournmentType {
-  SAME_DAY
-  NEXT_TERM
-  DATE_FIXED
-  DATE_TO_BE_FIXED
-  GENERAL
-}
-
-// ============================================================
-// USER
-// ============================================================
-
-model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  name         String
-  role         UserRole
-  passwordHash String
-
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  registrarFor CourtDay[]    @relation("CourtDayRegistrar")
-  listUpdates  ListUpdate[]
-  courtUpdates CourtDayUpdate[]
-
-  @@map("users")
-}
-
-// ============================================================
-// COURT
-// ============================================================
-
-model Court {
-  id          String  @id @default(cuid())
-  name        String
-  courtLevel  String
-  location    String
-  roomLabel   String?
-  active      Boolean @default(true)
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  courtDays   CourtDay[]
-
-  @@map("courts")
-}
-
-// ============================================================
-// COURT DAY
-// ============================================================
-
-model CourtDay {
-  id            String         @id @default(cuid())
-  courtId       String
-  court         Court          @relation(fields: [courtId], references: [id])
-
-  date          DateTime       @db.Date
-  judgeName     String?
-  sessionPeriod SessionPeriod  @default(MORNING)
-
-  status        CourtDayStatus @default(SETUP)
-
-  lastSequence  Int            @default(0)
-
-  judgeRoseAt   DateTime?
-  resumesAt     DateTime?
-  wentLiveAt    DateTime?
-  concludedAt   DateTime?
-
-  registrarId   String?
-  registrar     User?          @relation("CourtDayRegistrar", fields: [registrarId], references: [id])
-
-  publicNote    String?
-
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-
-  listItems     ListItem[]
-  listUpdates   ListUpdate[]
-  courtUpdates  CourtDayUpdate[]
-
-  @@unique([courtId, date])
-  @@map("court_days")
-}
-
-// ============================================================
-// LIST ITEM
-// ============================================================
-
-model ListItem {
-  id            String        @id @default(cuid())
-  courtDayId    String
-  courtDay      CourtDay      @relation(fields: [courtDayId], references: [id])
-
-  position      Int
-  caseReference String?
-
-  caseTitleFull   String
-  caseTitlePublic String
-
-  parties       String?
-  counselNames  String[]
-
-  status        ListItemStatus @default(WAITING)
-
-  estimatedDurationMinutes Int?
-  actualStartTime          DateTime?
-  actualEndTime            DateTime?
-
-  notBeforeTime   DateTime?
-  adjournedUntil  DateTime?
-
-  directionCode   DirectionCode?
-  outcomeCode     OutcomeCode?
-
-  adjournmentType AdjournmentType?
-  nextListingNote String?
-
-  publicNote      String?
-  internalNote    String?
-
-  callOverType    String?
-  isKnownAdjournment Boolean @default(false)
-
-  stoodDownAt     DateTime?
-  restoredAt      DateTime?
-
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  updates         ListUpdate[]
-
-  @@index([courtDayId, position])
-  @@index([courtDayId, status])
-  @@map("list_items")
-}
-
-// ============================================================
-// LIST UPDATE (EVENT STREAM)
-// ============================================================
-
-model ListUpdate {
-  id              String         @id @default(cuid())
-
-  courtDayId      String
-  sequence        Int
-
-  listItemId      String
-  listItem        ListItem       @relation(fields: [listItemId], references: [id])
-
-  updatedById     String?
-  updatedBy       User?          @relation(fields: [updatedById], references: [id])
-
-  eventType       String
-
-  previousStatus  ListItemStatus?
-  newStatus       ListItemStatus?
-
-  minutesAdded    Int?
-
-  snapshotNote    String?
-
-  reversedEventId String?
-
-  idempotencyKey  String?
-
-  timestamp       DateTime @default(now())
-
-  courtDay        CourtDay @relation(fields: [courtDayId], references: [id])
-
-  @@unique([courtDayId, sequence])
-  @@index([courtDayId, sequence])
-  @@index([listItemId])
-  @@index([idempotencyKey])
-  @@map("list_updates")
-}
-
-// ============================================================
-// COURT DAY UPDATE (EVENT STREAM)
-// ============================================================
-
-model CourtDayUpdate {
-  id              String         @id @default(cuid())
-
-  courtDayId      String
-  courtDay        CourtDay       @relation(fields: [courtDayId], references: [id])
-
-  sequence        Int
-
-  previousStatus  CourtDayStatus?
-  newStatus       CourtDayStatus?
-
-  eventType       String
-  publicNote      String?
-
-  reversedEventId String?
-  idempotencyKey  String?
-
-  timestamp       DateTime @default(now())
-
-  updatedById     String?
-  updatedBy       User? @relation(fields: [updatedById], references: [id])
-
-  @@unique([courtDayId, sequence])
-  @@index([courtDayId, sequence])
-  @@index([idempotencyKey])
-  @@map("court_day_updates")
 }
