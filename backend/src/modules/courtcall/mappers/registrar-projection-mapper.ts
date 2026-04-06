@@ -1,0 +1,82 @@
+import type { CourtDay, ListItem } from '@prisma/client';
+import type {
+  CourtDayRegistrarProjection,
+  ListItemRegistrarView,
+  CourtDayBanner,
+} from '../dto/responses.js';
+import { ListItemStatus } from '../domain/enums.js';
+
+function toIsoOrNull(d: Date | null): string | null {
+  return d ? d.toISOString() : null;
+}
+
+export function mapListItemRegistrar(item: ListItem): ListItemRegistrarView {
+  return {
+    id: item.id,
+    queuePosition: item.queuePosition,
+    caseName: item.caseName,
+    caseReference: item.caseReference,
+    partiesShort: item.partiesShort,
+    status: item.status,
+    estimatedDurationMinutes: item.estimatedDurationMinutes,
+    predictedStartTime: toIsoOrNull(item.predictedStartTime),
+    predictedEndTime: toIsoOrNull(item.predictedEndTime),
+    actualStartTime: toIsoOrNull(item.actualStartTime),
+    actualEndTime: toIsoOrNull(item.actualEndTime),
+    calledAt: toIsoOrNull(item.calledAt),
+    notBeforeTime: toIsoOrNull(item.notBeforeTime),
+    adjournedUntil: toIsoOrNull(item.adjournedUntil),
+    directionCode: item.directionCode,
+    outcomeCode: item.outcomeCode,
+    publicNote: item.publicNote,
+    isPriority: item.isPriority,
+    // Registrar-only fields
+    internalNote: item.internalNote,
+    stoodDownAt: toIsoOrNull(item.stoodDownAt),
+    restoredAt: toIsoOrNull(item.restoredAt),
+    isHiddenFromPublic: item.isHiddenFromPublic,
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
+function mapBannerRegistrar(courtDay: CourtDay): CourtDayBanner & { endedAt: string | null } {
+  return {
+    status: courtDay.status,
+    sessionStatus: courtDay.sessionStatus,
+    sessionMessage: courtDay.sessionMessage,
+    judgeName: courtDay.judgeName,
+    registrarName: courtDay.registrarName,
+    roseAt: toIsoOrNull(courtDay.roseAt),
+    expectedResumeAt: toIsoOrNull(courtDay.expectedResumeAt),
+    resumedAt: toIsoOrNull(courtDay.resumedAt),
+    startedAt: toIsoOrNull(courtDay.startedAt),
+    endedAt: toIsoOrNull(courtDay.endedAt),
+  };
+}
+
+export function mapRegistrarProjection(
+  courtDay: CourtDay,
+  items: ListItem[],
+): CourtDayRegistrarProjection {
+  const registrarItems = items.map(mapListItemRegistrar);
+
+  const activeItem =
+    registrarItems.find(
+      (i) => i.status === ListItemStatus.HEARING || i.status === ListItemStatus.CALLING,
+    ) ?? null;
+
+  const nextCallableItems = registrarItems.filter(
+    (i) => i.status === ListItemStatus.WAITING || i.status === ListItemStatus.NOT_BEFORE,
+  ).slice(0, 5);
+
+  return {
+    id: courtDay.id,
+    courtId: courtDay.courtId,
+    date: courtDay.date.toISOString().split('T')[0],
+    banner: mapBannerRegistrar(courtDay),
+    activeItem,
+    nextCallableItems,
+    listItems: registrarItems,
+  };
+}
