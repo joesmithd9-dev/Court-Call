@@ -4,3 +4,5 @@ generated/
 *.db
 *.db-journal
 .env
+.env
+*.log
