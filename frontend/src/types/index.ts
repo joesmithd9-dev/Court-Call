@@ -23,7 +23,9 @@ export interface CourtCase {
   id: string;
   courtDayId: string;
   position: number;
-  caseName: string;
+  caseName: string;           // deprecated — use caseTitleFull / caseTitlePublic
+  caseTitleFull: string;      // 6.5: full party names (registrar only)
+  caseTitlePublic: string;    // 6.5: privacy-safe title (public view)
   caseNumber?: string;
   status: CaseStatus;
   scheduledTime?: string;
@@ -37,6 +39,7 @@ export interface CourtCase {
   updatedAt: string;
 }
 
+// ---- Snapshot includes its own sequence ----
 export interface CourtDay {
   id: string;
   courtName: string;
@@ -44,9 +47,10 @@ export interface CourtDay {
   judgeName: string;
   date: string;
   status: CourtDayStatus;
-  statusMessage?: string; // e.g. "Back at 14:15"
+  statusMessage?: string;
   resumeTime?: string;
   currentCaseId?: string;
+  lastSequence: number;       // 6.1: monotonic event sequence watermark
   cases: CourtCase[];
   createdAt: string;
   updatedAt: string;
@@ -62,6 +66,8 @@ export type SSEEventType =
   | 'heartbeat';
 
 export interface SSEEvent {
+  id: string;                 // 6.1: unique event id
+  sequence: number;           // 6.1: monotonic per courtDay
   type: SSEEventType;
   data: Partial<CourtDay> & {
     case?: CourtCase;
@@ -89,4 +95,12 @@ export interface UpdateCourtDayPayload {
 export interface ReorderPayload {
   caseId: string;
   newPosition: number;
+}
+
+// ---- 6.3: Undo ----
+export interface LastAction {
+  actionType: string;
+  caseId: string;
+  timestamp: number;
+  previousPayload: UpdateCasePayload | UpdateCourtDayPayload;
 }

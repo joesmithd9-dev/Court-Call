@@ -50,11 +50,11 @@ export function PublicLiveList() {
         resumeTime={courtDay.resumeTime}
       />
 
-      {currentCase && <CurrentCaseCard courtCase={currentCase} />}
+      {/* 6.5: Public view uses caseTitlePublic */}
+      {currentCase && <CurrentCaseCard courtCase={currentCase} view="public" />}
 
-      <NextUpStrip cases={upcoming} maxVisible={5} />
+      <NextUpStrip cases={upcoming} maxVisible={5} view="public" />
 
-      {/* Full list */}
       <div className="flex-1">
         <div className="px-4 py-2 border-b border-court-border">
           <p className="text-xs text-court-text-dim font-semibold uppercase tracking-widest">
@@ -67,11 +67,11 @@ export function PublicLiveList() {
             courtCase={c}
             position={i + 1}
             isCurrent={c.id === courtDay.currentCaseId}
+            view="public"
           />
         ))}
       </div>
 
-      {/* Footer */}
       <footer className="px-4 py-3 text-center text-xs text-court-text-dim border-t border-court-border">
         CourtCall — Live List
       </footer>

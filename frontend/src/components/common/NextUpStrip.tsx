@@ -1,13 +1,15 @@
 import type { CourtCase } from '../../types';
+import { getCaseTitle } from '../../stores/courtDayStore';
 import { TimeChip } from './TimeChip';
 import { StatusBadge } from './StatusBadge';
 
 interface Props {
   cases: CourtCase[];
   maxVisible?: number;
+  view: 'public' | 'registrar';
 }
 
-export function NextUpStrip({ cases, maxVisible = 3 }: Props) {
+export function NextUpStrip({ cases, maxVisible = 3, view }: Props) {
   const visible = cases.slice(0, maxVisible);
 
   if (visible.length === 0) return null;
@@ -26,7 +28,10 @@ export function NextUpStrip({ cases, maxVisible = 3 }: Props) {
             <span className="text-sm font-mono text-court-text-dim w-5 text-right shrink-0">
               {i + 1}
             </span>
-            <span className="text-sm text-white truncate flex-1">{c.caseName}</span>
+            {/* 6.5: View-appropriate title */}
+            <span className="text-sm text-white truncate flex-1">
+              {getCaseTitle(c, view)}
+            </span>
             <StatusBadge status={c.status} />
             <TimeChip courtCase={c} showRelative />
           </div>

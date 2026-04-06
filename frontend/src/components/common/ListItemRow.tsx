@@ -1,4 +1,5 @@
 import type { CourtCase } from '../../types';
+import { getCaseTitle } from '../../stores/courtDayStore';
 import { StatusBadge } from './StatusBadge';
 import { TimeChip } from './TimeChip';
 
@@ -6,10 +7,14 @@ interface Props {
   courtCase: CourtCase;
   position: number;
   isCurrent: boolean;
+  view: 'public' | 'registrar';
   children?: React.ReactNode;
 }
 
-export function ListItemRow({ courtCase: c, position, isCurrent, children }: Props) {
+export function ListItemRow({ courtCase: c, position, isCurrent, view, children }: Props) {
+  // 6.5: Use view-appropriate title
+  const title = getCaseTitle(c, view);
+
   return (
     <div
       className={`px-4 py-2.5 border-b border-court-border flex items-center gap-3 ${
@@ -25,7 +30,7 @@ export function ListItemRow({ courtCase: c, position, isCurrent, children }: Pro
       </span>
       <div className="flex-1 min-w-0">
         <p className={`text-sm truncate ${isCurrent ? 'text-white font-semibold' : 'text-court-text'}`}>
-          {c.caseName}
+          {title}
         </p>
         {c.note && (
           <p className="text-xs text-court-text-dim truncate italic">{c.note}</p>

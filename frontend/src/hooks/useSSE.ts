@@ -7,7 +7,7 @@ const RECONNECT_MAX_MS = 30000;
 interface UseSSEOptions {
   url: string;
   onEvent: (event: SSEEvent) => void;
-  onReconnect: () => void;
+  onReconnect: () => Promise<void> | void;
   enabled?: boolean;
 }
 
@@ -52,8 +52,9 @@ export function useSSE({ url, onEvent, onReconnect, enabled = true }: UseSSEOpti
       );
       retryRef.current += 1;
 
-      reconnectTimerRef.current = setTimeout(() => {
-        onReconnectRef.current();
+      reconnectTimerRef.current = setTimeout(async () => {
+        // 6.2: Reconnect fetches fresh snapshot before reopening stream
+        await onReconnectRef.current();
         connect();
       }, delay);
     };

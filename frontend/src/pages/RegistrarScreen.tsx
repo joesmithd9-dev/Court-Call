@@ -12,7 +12,9 @@ import {
   updateCourtDay,
   updateCase,
   startNextCase,
+  undoAction,
 } from '../api/client';
+import type { UpdateCasePayload } from '../types';
 import { CourtHeader } from '../components/common/CourtHeader';
 import { StatusBanner } from '../components/common/StatusBanner';
 import { CurrentCaseCard } from '../components/common/CurrentCaseCard';
@@ -28,7 +30,8 @@ type SheetType = 'adjourn' | 'not_before' | null;
 
 export function RegistrarScreen() {
   const { courtDayId } = useParams<{ courtDayId: string }>();
-  const { courtDay, loading, error, connected, setCourtDay } = useCourtDayStore();
+  const { courtDay, loading, error, connected, lastAction, replaceSnapshot, setLastAction, clearLastAction } =
+    useCourtDayStore();
 
   useCourtDayLoader({
     courtDayId: courtDayId!,
@@ -42,27 +45,44 @@ export function RegistrarScreen() {
 
   const id = courtDayId!;
 
+  // 6.3: Record action for undo
+  const recordAction = useCallback(
+    (actionType: string, caseId: string, previousPayload: UpdateCasePayload) => {
+      setLastAction({
+        actionType,
+        caseId,
+        timestamp: Date.now(),
+        previousPayload,
+      });
+    },
+    [setLastAction]
+  );
+
   // ---- Current case actions ----
   const handleAddTime = useCallback(
     async (minutes: number) => {
       if (!courtDay?.currentCaseId) return;
       const c = courtDay.cases.find((c) => c.id === courtDay.currentCaseId);
-      const newEst = (c?.estimatedMinutes ?? 0) + minutes;
+      const prevEst = c?.estimatedMinutes ?? 0;
+      const newEst = prevEst + minutes;
       const result = await updateCase(id, courtDay.currentCaseId, {
         estimatedMinutes: newEst,
       });
-      setCourtDay(result);
+      recordAction('add_time', courtDay.currentCaseId, { estimatedMinutes: prevEst });
+      replaceSnapshot(result);
     },
-    [courtDay, id, setCourtDay]
+    [courtDay, id, replaceSnapshot, recordAction]
   );
 
   const handleDone = useCallback(async () => {
     if (!courtDay?.currentCaseId) return;
+    const c = courtDay.cases.find((c) => c.id === courtDay.currentCaseId);
     const result = await updateCase(id, courtDay.currentCaseId, {
       status: 'concluded',
     });
-    setCourtDay(result);
-  }, [courtDay, id, setCourtDay]);
+    recordAction('done', courtDay.currentCaseId, { status: c?.status });
+    replaceSnapshot(result);
+  }, [courtDay, id, replaceSnapshot, recordAction]);
 
   const handleAdjournCurrent = useCallback(() => {
     if (!courtDay?.currentCaseId) return;
@@ -72,74 +92,91 @@ export function RegistrarScreen() {
 
   const handleLetStand = useCallback(async () => {
     if (!courtDay?.currentCaseId) return;
+    const c = courtDay.cases.find((c) => c.id === courtDay.currentCaseId);
     const result = await updateCase(id, courtDay.currentCaseId, {
       status: 'stood_down',
     });
-    setCourtDay(result);
-  }, [courtDay, id, setCourtDay]);
+    recordAction('let_stand', courtDay.currentCaseId, { status: c?.status });
+    replaceSnapshot(result);
+  }, [courtDay, id, replaceSnapshot, recordAction]);
+
+  // ---- 6.3: Undo ----
+  const handleUndo = useCallback(async () => {
+    if (!lastAction) return;
+    if (Date.now() - lastAction.timestamp > 10_000) return;
+    const result = await undoAction(id, lastAction.actionType, lastAction.caseId, lastAction.previousPayload);
+    clearLastAction();
+    replaceSnapshot(result);
+  }, [id, lastAction, clearLastAction, replaceSnapshot]);
 
   // ---- Sheet confirmations ----
   const handleAdjournConfirm = useCallback(
     async (time: string) => {
       if (!sheetCaseId) return;
+      const c = courtDay?.cases.find((c) => c.id === sheetCaseId);
       const result = await updateCase(id, sheetCaseId, {
         status: 'adjourned',
         adjournedToTime: time,
       });
-      setCourtDay(result);
+      recordAction('adjourn', sheetCaseId, { status: c?.status, adjournedToTime: c?.adjournedToTime });
+      replaceSnapshot(result);
       setActiveSheet(null);
       setSheetCaseId(null);
     },
-    [id, sheetCaseId, setCourtDay]
+    [id, sheetCaseId, courtDay, replaceSnapshot, recordAction]
   );
 
   const handleNotBeforeConfirm = useCallback(
     async (time: string) => {
       if (!sheetCaseId) return;
+      const c = courtDay?.cases.find((c) => c.id === sheetCaseId);
       const result = await updateCase(id, sheetCaseId, {
         status: 'not_before',
         notBeforeTime: time,
       });
-      setCourtDay(result);
+      recordAction('not_before', sheetCaseId, { status: c?.status, notBeforeTime: c?.notBeforeTime });
+      replaceSnapshot(result);
       setActiveSheet(null);
       setSheetCaseId(null);
     },
-    [id, sheetCaseId, setCourtDay]
+    [id, sheetCaseId, courtDay, replaceSnapshot, recordAction]
   );
 
   // ---- Global controls ----
   const handleJudgeRose = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'judge_rose' });
-    setCourtDay(result);
-  }, [id, setCourtDay]);
+    replaceSnapshot(result);
+  }, [id, replaceSnapshot]);
 
   const handleResume = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'live' });
-    setCourtDay(result);
-  }, [id, setCourtDay]);
+    replaceSnapshot(result);
+  }, [id, replaceSnapshot]);
 
   const handleStartNext = useCallback(async () => {
     const result = await startNextCase(id);
-    setCourtDay(result);
-  }, [id, setCourtDay]);
+    replaceSnapshot(result);
+  }, [id, replaceSnapshot]);
 
   const handleEndDay = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'ended' });
-    setCourtDay(result);
-  }, [id, setCourtDay]);
+    replaceSnapshot(result);
+  }, [id, replaceSnapshot]);
 
   const handleAtLunch = useCallback(async () => {
     const result = await updateCourtDay(id, { status: 'at_lunch' });
-    setCourtDay(result);
-  }, [id, setCourtDay]);
+    replaceSnapshot(result);
+  }, [id, replaceSnapshot]);
 
   // ---- Inline case actions ----
   const handleInlineCaseAction = useCallback(
     async (caseId: string, action: string) => {
+      const c = courtDay?.cases.find((c) => c.id === caseId);
       switch (action) {
         case 'done': {
           const result = await updateCase(id, caseId, { status: 'concluded' });
-          setCourtDay(result);
+          recordAction('done', caseId, { status: c?.status });
+          replaceSnapshot(result);
           break;
         }
         case 'adjourn': {
@@ -154,7 +191,8 @@ export function RegistrarScreen() {
         }
         case 'let_stand': {
           const result = await updateCase(id, caseId, { status: 'stood_down' });
-          setCourtDay(result);
+          recordAction('let_stand', caseId, { status: c?.status });
+          replaceSnapshot(result);
           break;
         }
         case 'note': {
@@ -164,16 +202,16 @@ export function RegistrarScreen() {
       }
       setExpandedCaseId(null);
     },
-    [id, setCourtDay]
+    [id, courtDay, replaceSnapshot, recordAction]
   );
 
   const handleSaveNote = useCallback(
     async (caseId: string, note: string) => {
       const result = await updateCase(id, caseId, { note });
-      setCourtDay(result);
+      replaceSnapshot(result);
       setEditingNoteId(null);
     },
-    [id, setCourtDay]
+    [id, replaceSnapshot]
   );
 
   // ---- Render ----
@@ -210,17 +248,20 @@ export function RegistrarScreen() {
         resumeTime={courtDay.resumeTime}
       />
 
-      {currentCase && <CurrentCaseCard courtCase={currentCase} />}
+      {/* 6.5: Registrar view uses caseTitleFull */}
+      {currentCase && <CurrentCaseCard courtCase={currentCase} view="registrar" />}
 
       <QuickActionBar
         currentCase={currentCase}
+        lastAction={lastAction}
         onAddTime={handleAddTime}
         onDone={handleDone}
         onAdjourn={handleAdjournCurrent}
         onLetStand={handleLetStand}
+        onUndo={handleUndo}
       />
 
-      <NextUpStrip cases={upcoming} maxVisible={3} />
+      <NextUpStrip cases={upcoming} maxVisible={3} view="registrar" />
 
       {/* Full list */}
       <div className="flex-1 overflow-y-auto">
@@ -241,21 +282,17 @@ export function RegistrarScreen() {
                 courtCase={c}
                 position={i + 1}
                 isCurrent={c.id === courtDay.currentCaseId}
+                view="registrar"
               />
             </div>
 
-            {/* Inline expanded actions */}
             {expandedCaseId === c.id && (
-              <div className="px-4 py-2 bg-court-surface-2 border-b border-court-border flex flex-wrap gap-2">
-                <InlineBtn label="Done" onClick={() => handleInlineCaseAction(c.id, 'done')} />
-                <InlineBtn label="Adjourn" onClick={() => handleInlineCaseAction(c.id, 'adjourn')} />
-                <InlineBtn label="Not Before" onClick={() => handleInlineCaseAction(c.id, 'not_before')} />
-                <InlineBtn label="Let Stand" onClick={() => handleInlineCaseAction(c.id, 'let_stand')} />
-                <InlineBtn label="Note" onClick={() => handleInlineCaseAction(c.id, 'note')} />
-              </div>
+              <InlineActions
+                caseId={c.id}
+                onAction={handleInlineCaseAction}
+              />
             )}
 
-            {/* Inline note editor */}
             {editingNoteId === c.id && (
               <div className="px-4 py-2 bg-court-surface-2 border-b border-court-border">
                 <NoteInput
@@ -279,7 +316,6 @@ export function RegistrarScreen() {
         onAtLunch={handleAtLunch}
       />
 
-      {/* Sheets */}
       {activeSheet === 'adjourn' && (
         <AdjournSheet
           onConfirm={handleAdjournConfirm}
@@ -298,6 +334,37 @@ export function RegistrarScreen() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// 6.4: Inline action buttons with tap protection
+function InlineActions({
+  caseId,
+  onAction,
+}: {
+  caseId: string;
+  onAction: (caseId: string, action: string) => Promise<void>;
+}) {
+  const [locked, setLocked] = useState(false);
+
+  const handleTap = async (action: string) => {
+    if (locked) return;
+    setLocked(true);
+    try {
+      await onAction(caseId, action);
+    } finally {
+      setTimeout(() => setLocked(false), 500);
+    }
+  };
+
+  return (
+    <div className={`px-4 py-2 bg-court-surface-2 border-b border-court-border flex flex-wrap gap-2 ${locked ? 'opacity-50 pointer-events-none' : ''}`}>
+      <InlineBtn label="Done" onClick={() => handleTap('done')} />
+      <InlineBtn label="Adjourn" onClick={() => handleTap('adjourn')} />
+      <InlineBtn label="Not Before" onClick={() => handleTap('not_before')} />
+      <InlineBtn label="Let Stand" onClick={() => handleTap('let_stand')} />
+      <InlineBtn label="Note" onClick={() => handleTap('note')} />
     </div>
   );
 }

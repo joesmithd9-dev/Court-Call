@@ -10,18 +10,19 @@ interface Options {
 }
 
 export function useCourtDayLoader({ courtDayId, fetchFn }: Options) {
-  const { setCourtDay, setLoading, setError, setConnected, handleSSEEvent } =
+  const { replaceSnapshot, setLoading, setError, setConnected, handleSSEEvent } =
     useCourtDayStore();
 
+  // 6.2: Full snapshot replacement — never merge, always replace
   const loadSnapshot = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await fetchFn(courtDayId);
-      setCourtDay(data);
+      const snapshot = await fetchFn(courtDayId);
+      replaceSnapshot(snapshot);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load');
     }
-  }, [courtDayId, fetchFn, setCourtDay, setLoading, setError]);
+  }, [courtDayId, fetchFn, replaceSnapshot, setLoading, setError]);
 
   useEffect(() => {
     loadSnapshot();
@@ -33,9 +34,15 @@ export function useCourtDayLoader({ courtDayId, fetchFn }: Options) {
       setConnected(true);
       handleSSEEvent(event);
     },
-    onReconnect: () => {
+    // 6.2: On reconnect, fetch fresh snapshot and replace entire store
+    onReconnect: async () => {
       setConnected(false);
-      loadSnapshot();
+      try {
+        const snapshot = await fetchFn(courtDayId);
+        replaceSnapshot(snapshot);
+      } catch {
+        // snapshot fetch failed — will retry on next reconnect
+      }
     },
   });
 }
