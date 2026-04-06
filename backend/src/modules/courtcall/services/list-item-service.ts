@@ -7,6 +7,13 @@ import { ListItemStatus, CourtDayStatus } from '../domain/enums.js';
 import { ListItemEventType, CourtDayEventType } from '../domain/event-types.js';
 import { assertTransitionAllowed, isCallableNow, shouldAffectQueuePrediction } from '../domain/transition-rules.js';
 import type { ActorContext, CourtCallEventEnvelope } from '../domain/types.js';
+import {
+  bridgeCaseStarted,
+  bridgeCaseCompleted,
+  bridgeCaseAdjourned,
+  bridgeCaseNotBeforeSet,
+  bridgeCaseDelayAdded,
+} from './event-bridge.js';
 import type {
   CreateListItemInput,
   CallInput,
@@ -372,6 +379,11 @@ export async function startItem(
   });
 
   publish(envelope);
+  // Bridge: emit canonical CASE_STARTED and CASE_COMPLETED for auto-completed items
+  bridgeCaseStarted(result.courtDayId, listItemId, actor);
+  for (const id of result.autoCompletedIds) {
+    bridgeCaseCompleted(result.courtDayId, id, 'CONCLUDED', actor);
+  }
   await recomputePredictionsForCourtDay(result.courtDayId);
   return { listItem: result.item, envelope };
 }
@@ -427,6 +439,7 @@ export async function extendEstimate(
   });
 
   publish(envelope);
+  bridgeCaseDelayAdded(result.courtDayId, listItemId, input.additionalMinutes, actor);
   await recomputePredictionsForCourtDay(result.courtDayId);
   return { listItem: result.item, envelope };
 }
@@ -436,7 +449,7 @@ export async function setNotBefore(
   input: NotBeforeInput,
   actor: ActorContext,
 ): Promise<CommandResult> {
-  return transitionItem(
+  const result = await transitionItem(
     listItemId,
     ListItemStatus.NOT_BEFORE,
     ListItemEventType.NOT_BEFORE_SET,
@@ -450,6 +463,8 @@ export async function setNotBefore(
       publicNote: input.publicNote ?? null,
     },
   );
+  bridgeCaseNotBeforeSet(result.envelope.courtDayId, listItemId, input.notBeforeTime, actor);
+  return result;
 }
 
 export async function adjournItem(
@@ -457,7 +472,7 @@ export async function adjournItem(
   input: AdjournInput,
   actor: ActorContext,
 ): Promise<CommandResult> {
-  return transitionItem(
+  const result = await transitionItem(
     listItemId,
     ListItemStatus.ADJOURNED,
     ListItemEventType.ADJOURNED,
@@ -475,6 +490,13 @@ export async function adjournItem(
       directionCode: input.directionCode ?? null,
     },
   );
+  bridgeCaseAdjourned(
+    result.envelope.courtDayId,
+    listItemId,
+    input.adjournedUntil ?? new Date().toISOString(),
+    actor,
+  );
+  return result;
 }
 
 export async function letStandItem(
@@ -545,7 +567,7 @@ export async function completeItem(
   input: CompleteInput,
   actor: ActorContext,
 ): Promise<CommandResult> {
-  return transitionItem(
+  const result = await transitionItem(
     listItemId,
     ListItemStatus.CONCLUDED,
     ListItemEventType.COMPLETED,
@@ -562,6 +584,8 @@ export async function completeItem(
       internalNote: input.internalNote ?? null,
     },
   );
+  bridgeCaseCompleted(result.envelope.courtDayId, listItemId, input.outcomeCode, actor);
+  return result;
 }
 
 export async function reorderItem(

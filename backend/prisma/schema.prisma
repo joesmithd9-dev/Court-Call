@@ -91,6 +91,7 @@ model CourtDay {
 
   court          Court            @relation(fields: [courtId], references: [id])
   listItems      ListItem[]
+  courtEvents     CourtEvent[]
   courtDayUpdates CourtDayUpdate[]
   listItemUpdates ListItemUpdate[]
 
@@ -133,6 +134,45 @@ model ListItem {
   @@index([courtDayId, status])
   @@map("list_items")
 }
+
+// ─── Canonical Event Store (Locked Spec) ────────────────────────────────────
+
+/// The canonical, append-only event store for CourtCall.
+/// State is a projection of these events — never the source of truth on its own.
+/// Sequence is strictly monotonic per courtDay with no gaps or duplicates.
+model CourtEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  courtDayId     String   @db.Uuid
+  sequence       Int
+  type           String   // Closed set: CASE_STARTED | CASE_COMPLETED | CASE_ADJOURNED | CASE_NOT_BEFORE_SET | CASE_DELAY_ADDED | COURT_ROSE | COURT_RESUMED | UNDO_APPLIED
+  payload        Json     @default("{}")
+  causedByUserId String?
+  causedByRole   ActorRole
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+
+  courtDay CourtDay @relation(fields: [courtDayId], references: [id])
+
+  @@unique([courtDayId, sequence])
+  @@unique([idempotencyKey])
+  @@index([courtDayId, sequence])
+  @@map("court_events")
+}
+
+/// Server-side idempotency enforcement table.
+/// Every mutating request MUST include an Idempotency-Key header.
+/// If the key has already been seen, the same response is returned without creating a new event.
+model IdempotencyRecord {
+  id           String   @id @default(uuid()) @db.Uuid
+  key          String   @unique
+  eventId      String   @db.Uuid
+  responseHash String
+  createdAt    DateTime @default(now())
+
+  @@map("idempotency_records")
+}
+
+// ─── Legacy Audit Logs ──────────────────────────────────────────────────────
 
 /// Append-only audit/event record for court-wide events.
 model CourtDayUpdate {

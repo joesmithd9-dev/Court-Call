@@ -3,7 +3,9 @@ import { ZodError } from 'zod';
 import { courtDayRoutes } from './modules/courtcall/routes/court-day-routes.js';
 import { listItemRoutes } from './modules/courtcall/routes/list-item-routes.js';
 import { streamRoutes } from './modules/courtcall/routes/stream-routes.js';
+import { eventRoutes } from './modules/courtcall/routes/event-routes.js';
 import { TransitionError } from './modules/courtcall/domain/transition-rules.js';
+import { EventValidationError } from './modules/courtcall/services/event-validator.js';
 
 const app = Fastify({
   logger: {
@@ -26,6 +28,15 @@ app.setErrorHandler((error, _request, reply) => {
         path: e.path.join('.'),
         message: e.message,
       })),
+    });
+    return;
+  }
+
+  // Event validation errors → 409 Conflict
+  if (error instanceof EventValidationError) {
+    reply.status(409).send({
+      error: 'Event validation failed',
+      message: error.message,
     });
     return;
   }
@@ -63,6 +74,7 @@ app.setErrorHandler((error, _request, reply) => {
 app.register(courtDayRoutes);
 app.register(listItemRoutes);
 app.register(streamRoutes);
+app.register(eventRoutes);
 
 // ─── Health check ────────────────────────────────────────────────────────────
 

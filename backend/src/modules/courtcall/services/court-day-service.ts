@@ -14,6 +14,7 @@ import type {
 } from '../dto/requests.js';
 
 import { recomputePredictionsForCourtDay } from './recalculation-engine.js';
+import { bridgeCourtRose, bridgeCourtResumed } from './event-bridge.js';
 
 /**
  * Re-export the recalculation engine for consumers (e.g. list-item-service)
@@ -189,6 +190,7 @@ export async function judgeRose(
   });
 
   publish(envelope);
+  bridgeCourtRose(courtDayId, actor);
   await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
@@ -244,6 +246,7 @@ export async function resume(
   });
 
   publish(envelope);
+  bridgeCourtResumed(courtDayId, actor);
   await recomputePredictionsForCourtDay(courtDayId);
   return { courtDay: result.courtDay, envelope };
 }
