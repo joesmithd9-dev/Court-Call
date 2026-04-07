@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -10,5 +11,16 @@ export default defineConfig({
       '/v1': 'http://localhost:3100',
       '/health': 'http://localhost:3100',
     },
+  },
+    proxy: {
+      '/v1': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+  },
+  test: {
+    environment: 'node',
+    globals: true,
   },
 })

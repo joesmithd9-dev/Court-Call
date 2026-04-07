@@ -1,11 +1,11 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import { ZodError } from 'zod';
 import { courtDayRoutes } from './modules/courtcall/routes/court-day-routes.js';
 import { listItemRoutes } from './modules/courtcall/routes/list-item-routes.js';
 import { streamRoutes } from './modules/courtcall/routes/stream-routes.js';
-import { eventRoutes } from './modules/courtcall/routes/event-routes.js';
 import { TransitionError } from './modules/courtcall/domain/transition-rules.js';
-import { EventValidationError } from './modules/courtcall/services/event-validator.js';
+import { AuthError } from './modules/courtcall/routes/auth.js';
 
 const app = Fastify({
   logger: {
@@ -32,15 +32,6 @@ app.setErrorHandler((error, _request, reply) => {
     return;
   }
 
-  // Event validation errors → 409 Conflict
-  if (error instanceof EventValidationError) {
-    reply.status(409).send({
-      error: 'Event validation failed',
-      message: error.message,
-    });
-    return;
-  }
-
   // Domain transition errors → 409 Conflict
   if (error instanceof TransitionError) {
     reply.status(409).send({
@@ -52,13 +43,21 @@ app.setErrorHandler((error, _request, reply) => {
     return;
   }
 
+  if (error instanceof AuthError) {
+    reply.status(error.statusCode).send({
+      error: 'Unauthorized',
+      message: error.message,
+    });
+    return;
+  }
+
   // Prisma NotFoundError → 404
   if (error.name === 'NotFoundError' || error.message?.includes('not found')) {
     reply.status(404).send({ error: 'Not found', message: error.message });
     return;
   }
 
-  // Business logic errors → 409 Conflict
+  // Business logic errors (thrown as plain Error with message)
   if (error.message?.startsWith('Cannot ') || error.message?.startsWith('Item ') || error.message?.startsWith('Court day')) {
     reply.status(409).send({ error: 'Conflict', message: error.message });
     return;
@@ -74,7 +73,6 @@ app.setErrorHandler((error, _request, reply) => {
 app.register(courtDayRoutes);
 app.register(listItemRoutes);
 app.register(streamRoutes);
-app.register(eventRoutes);
 
 // ─── Health check ────────────────────────────────────────────────────────────
 

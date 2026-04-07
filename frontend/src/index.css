@@ -3,3 +3,38 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
 .font-serif { font-family: Georgia, 'Times New Roman', serif; }
+@theme {
+  --color-court-bg: #0f1117;
+  --color-court-surface: #1a1c25;
+  --color-court-surface-2: #232530;
+  --color-court-border: #2e303a;
+  --color-court-text: #e5e7eb;
+  --color-court-text-dim: #9ca3af;
+  --color-court-active: #22c55e;
+  --color-court-active-bg: rgba(34, 197, 94, 0.15);
+  --color-court-warning: #f59e0b;
+  --color-court-warning-bg: rgba(245, 158, 11, 0.15);
+  --color-court-danger: #ef4444;
+  --color-court-danger-bg: rgba(239, 68, 68, 0.15);
+  --color-court-concluded: #6b7280;
+  --color-court-concluded-bg: rgba(107, 114, 128, 0.15);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--color-court-bg);
+  color: var(--color-court-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
