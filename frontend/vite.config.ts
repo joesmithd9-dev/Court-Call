@@ -12,13 +12,6 @@ export default defineConfig({
       '/health': 'http://localhost:3100',
     },
   },
-    proxy: {
-      '/v1': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-    },
-  },
   test: {
     environment: 'node',
     globals: true,
