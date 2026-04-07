@@ -5,8 +5,6 @@ import { LiveMatterCard } from '../components/LiveMatterCard';
 import { QueueRow } from '../components/QueueRow';
 import { SectionHeader } from '../components/SectionHeader';
 import { DurationBadge } from '../components/DurationBadge';
-import { StatusBadge } from '../components/StatusBadge';
-import { TypeBadge } from '../components/TypeBadge';
 import { GapFillerBar } from '../components/GapFillerBar';
 
 type Tab = 'live' | 'callover' | 'builder' | 'breakdown';
