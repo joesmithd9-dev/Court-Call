@@ -13,10 +13,8 @@ export default defineConfig({
     },
   },
     proxy: {
-      '/v1': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
+      '/v1': 'http://localhost:3100',
+      '/health': 'http://localhost:3100',
     },
   },
   test: {
