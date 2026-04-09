@@ -238,7 +238,7 @@ const STATUS_DISPLAY: Record<string, string> = {
   calling: 'Calling',
   hearing: 'Hearing',
   adjourned: 'Adjourned',
-  stood_down: 'Stood Down',
+  stood_down: 'Let Stand',
   not_before: 'Not Before',
   concluded: 'Concluded',
   vacated: 'Vacated',
