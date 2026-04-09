@@ -1,6 +1,5 @@
 import { useCourtStore } from '../store/useCourtStore';
 import { CourtStatusBanner } from '../components/CourtStatusBanner';
-import { QueueRow } from '../components/QueueRow';
 import { SectionHeader } from '../components/SectionHeader';
 import { DurationBadge } from '../components/DurationBadge';
 import { StatusBadge } from '../components/StatusBadge';
@@ -18,7 +17,6 @@ export function PublicScreen() {
   const pendingVisible = visibleMatters.filter(m =>
     m.status === 'PENDING' || m.status === 'NOT_BEFORE' || m.status === 'LET_STAND' || m.status === 'CALLING'
   );
-  const concludedVisible = visibleMatters.filter(m => m.status === 'CONCLUDED' || m.status === 'ADJOURNED');
 
   return (
     <div className="flex flex-col min-h-0 flex-1">

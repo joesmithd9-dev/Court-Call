@@ -12,7 +12,6 @@ export function JudgeScreen() {
   const [tab, setTab] = useState<Tab>('list');
   const court = useCourtStore(s => s.court);
   const active = useCourtStore(s => s.activeMatter());
-  const next = useCourtStore(s => s.nextMatters());
   const pending = useCourtStore(s => s.pendingMatters());
   const unanswered = useCourtStore(s => s.unansweredMatters());
   const byType = useCourtStore(s => s.mattersByType());
